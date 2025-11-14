@@ -17,6 +17,7 @@ pub struct AuthService {
 }
 
 impl AuthService {
+
     pub async fn create_access_token(
         &self,
         user_id: &str,

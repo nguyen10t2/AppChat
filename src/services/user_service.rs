@@ -18,16 +18,32 @@ impl UserService {
         self.db.collection::<User>("users")
     }
 
+    pub async fn init_indexes(&self) -> MongoResult<()> {
+        self.collection()
+            .create_index(
+                mongodb::IndexModel::builder()
+                    .keys(doc! { "email": 1 })
+                    .options(
+                        mongodb::options::IndexOptions::builder()
+                            .unique(true)
+                            .build(),
+                    )
+                    .build(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn create_user(
         &self,
         fullname: &str,
         email: &str,
         password: &str,
     ) -> MongoResult<User> {
-        let collection = self.collection();
         let now = BsonDateTime::from_system_time(Utc::now().into());
         let hashed_password = hash_password(password).map_err(|e| {
-            mongodb::error::Error::custom(format!("Failed to hash password: {}", e))
+            mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e))
         })?;
         let mut user = User {
             id: None,
@@ -38,11 +54,12 @@ impl UserService {
             avatar_url: None,
             bio: None,
             phone: None,
+            is_active: false,
             created_at: Some(now),
             updated_at: Some(now),
         };
 
-        let insert_result = collection.insert_one(&user).await?;
+        let insert_result = self.collection().insert_one(&user).await?;
         user.id = Some(
             insert_result
                 .inserted_id
@@ -54,29 +71,24 @@ impl UserService {
     }
 
     pub async fn is_exists(&self, email: &str) -> MongoResult<bool> {
-        let collection = self.db.collection::<User>("users");
-        let existing_user = collection.count_documents(doc! { "email": email }).await?;
-        Ok(existing_user > 0)
+        let count = self.collection().count_documents(doc! { "email": email }).await?;
+        Ok(count > 0)
     }
 
     pub async fn find_by_email(&self, email: &str) -> MongoResult<Option<User>> {
-        let collection = self.collection();
-        collection.find_one(doc! { "email": email }).await
+        self.collection().find_one(doc! { "email": email, "is_active": true }).await
     }
 
     pub async fn find_by_id(&self, id: &Oid) -> MongoResult<Option<User>> {
-        let collection = self.collection();
-        collection.find_one(doc! { "_id": id }).await
+        self.collection().find_one(doc! { "_id": id, "is_active": true }).await
     }
 
     pub async fn update_user(&self, email: &str, new_password: &str) -> MongoResult<Option<User>> {
-        let collection = self.collection();
-
         let hashed_password = hash_password(new_password).map_err(|e| {
-            mongodb::error::Error::custom(format!("Failed to hash password: {}", e))
+            mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e))
         })?;
 
-        let update_result = collection
+        self.collection()
             .find_one_and_update(
                 doc! { "email": email },
                 doc! {
@@ -86,14 +98,11 @@ impl UserService {
                     }
                 },
             )
-            .await?;
-
-        Ok(update_result)
+            .await
     }
 
     pub async fn delete_user(&self, id: &Oid) -> MongoResult<bool> {
-        let collection = self.collection();
-        let result = collection.delete_one(doc! { "_id": id }).await?;
+        let result = self.collection().delete_one(doc! { "_id": id }).await?;
         Ok(result.deleted_count > 0)
     }
 

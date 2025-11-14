@@ -14,6 +14,8 @@ pub struct User {
     pub avatar_id: Option<String>,
     pub bio: Option<String>,
     pub phone: Option<String>,
+    #[serde(default)]
+    pub is_active: bool,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<BsonDateTime>,

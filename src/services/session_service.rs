@@ -2,7 +2,7 @@ use mongodb::bson::oid::ObjectId;
 use mongodb::bson::{DateTime as BsonDateTime, doc};
 use mongodb::{Collection, Database, IndexModel};
 
-use crate::models::session::Session;
+use crate::models::session_model::Session;
 
 pub struct SessionService {
     pub db: Database,
@@ -15,10 +15,8 @@ impl SessionService {
     }
 
     pub async fn init_indexes(&self) -> mongodb::error::Result<()> {
-        let collection = self.collection();
-
         let ttl_index = IndexModel::builder()
-            .keys(doc! { "expires_at": 1 })
+            .keys(doc! { "expires_at": 1, "refresh_token": 1 })
             .options(
                 mongodb::options::IndexOptions::builder()
                     .expire_after(std::time::Duration::from_secs(0))
@@ -26,17 +24,19 @@ impl SessionService {
             )
             .build();
 
-        collection.create_indexes([ttl_index]).await?;
+        self.collection().create_indexes([ttl_index]).await?;
         Ok(())
     }
 
     pub async fn create_session(
         &self,
         user_id: ObjectId,
+        email: String,
         refresh_token: String,
     ) -> mongodb::error::Result<()> {
         let session = Session {
             user_id: Some(user_id),
+            email,
             refresh_token,
             expires_at: BsonDateTime::from_system_time(
                 chrono::Utc::now()
@@ -57,5 +57,11 @@ impl SessionService {
             .delete_one(doc! { "refresh_token": refresh_token })
             .await?;
         Ok(())
+    }
+
+    pub async fn find_one(&self, refresh_token: &str) -> mongodb::error::Result<Option<Session>> {
+        self.collection()
+            .find_one(doc! { "refresh_token": refresh_token })
+            .await
     }
 }

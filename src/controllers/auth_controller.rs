@@ -1,8 +1,9 @@
 use actix_web::cookie::{Cookie, SameSite, time};
-use actix_web::{HttpRequest, HttpResponse, web};
+use actix_web::{HttpRequest, HttpResponse, web, HttpMessage};
 use serde::Deserialize;
 
 use crate::libs::hash::verify_password;
+use crate::models::session_model::Session;
 use crate::models::user_model::UserResponse;
 use crate::services::auth_service::AuthService;
 use crate::services::session_service::SessionService;
@@ -21,6 +22,12 @@ pub struct RegisterRequest {
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct VerifyOtpRequest {
+    pub email: String,
+    pub otp: String,
 }
 
 pub async fn register(
@@ -117,7 +124,7 @@ pub async fn login(
     };
 
     if let Err(e) = session_service
-        .create_session(user.id.unwrap(), refresh_token.clone())
+        .create_session(user.id.unwrap(), user.email.clone(), refresh_token.clone())
         .await
     {
         return HttpResponse::InternalServerError().json(json!({
@@ -140,7 +147,10 @@ pub async fn login(
     }))
 }
 
-pub async fn logout(session_service: web::Data<SessionService>, req: HttpRequest) -> HttpResponse {
+pub async fn logout(
+    session_service: web::Data<SessionService>,
+    req: HttpRequest
+) -> HttpResponse {
     let token = req.cookie("refresh_token");
     if let Some(cookie) = token {
         let refresh_token = cookie.value();
@@ -164,4 +174,53 @@ pub async fn logout(session_service: web::Data<SessionService>, req: HttpRequest
             "error": "Không tìm thấy phiên làm việc"
         }))
     }
+}
+
+pub async fn refresh_token(
+    user_service: web::Data<UserService>,
+    auth_service: web::Data<AuthService>,
+    req: HttpRequest,
+) -> HttpResponse {
+    if let Some(session) = req.extensions().get::<Session>() {
+        let user = match user_service.find_by_email(&session.email).await {
+            Ok(Some(user)) => user,
+            Ok(None) => {
+                return HttpResponse::NotFound().json(json!({
+                    "error": "Người dùng không tồn tại"
+                }));
+            }
+            Err(e) => {
+                return HttpResponse::InternalServerError().json(json!({
+                    "error": format!("Lỗi khi lấy người dùng: {}", e)
+                }));
+            }
+        };
+
+        let access_token = match auth_service
+            .create_access_token(&user.id.unwrap().to_string(), &user.email)
+            .await
+        {
+            Ok(token) => token,
+            Err(e) => {
+                return HttpResponse::InternalServerError().json(json!({
+                    "error": format!("Lỗi khi tạo token: {}", e)
+                }));
+            }
+        };
+        HttpResponse::Ok().json(json!({
+            "access_token": access_token
+        }))
+    }
+    else {
+        HttpResponse::Unauthorized().json(json!({
+            "error": "Phiên làm việc không hợp lệ"
+        }))
+    }
+}
+
+pub async fn verify_otp(
+    user_service: web::Data<UserService>,
+
+) -> HttpResponse {
+    HttpResponse::Ok().finish()
 }
