@@ -1,0 +1,101 @@
+use crate::libs::hash::hash_password;
+use crate::models::user_model::User;
+use chrono::Utc;
+use mongodb::bson::oid::ObjectId as Oid;
+use mongodb::bson::{DateTime as BsonDateTime, doc};
+use mongodb::error::Result as MongoResult;
+use mongodb::{Collection, Database};
+
+#[derive(Clone)]
+pub struct UserService {
+    pub db: Database,
+}
+
+#[allow(dead_code)]
+impl UserService {
+
+    fn collection(&self) -> Collection<User> {
+        self.db.collection::<User>("users")
+    }
+
+    pub async fn create_user(
+        &self,
+        fullname: &str,
+        email: &str,
+        password: &str,
+    ) -> MongoResult<User> {
+        let collection = self.collection();
+        let now = BsonDateTime::from_system_time(Utc::now().into());
+        let hashed_password = hash_password(password).map_err(|e| {
+            mongodb::error::Error::custom(format!("Failed to hash password: {}", e))
+        })?;
+        let mut user = User {
+            id: None,
+            fullname: fullname.to_string(),
+            email: email.to_string(),
+            password: hashed_password,
+            avatar_id: None,
+            avatar_url: None,
+            bio: None,
+            phone: None,
+            created_at: Some(now),
+            updated_at: Some(now),
+        };
+
+        let insert_result = collection.insert_one(&user).await?;
+        user.id = Some(
+            insert_result
+                .inserted_id
+                .as_object_id()
+                .ok_or_else(|| mongodb::error::Error::custom("Invalid inserted _id"))?,
+        );
+
+        Ok(user)
+    }
+
+    pub async fn is_exists(&self, email: &str) -> MongoResult<bool> {
+        let collection = self.db.collection::<User>("users");
+        let existing_user = collection.count_documents(doc! { "email": email }).await?;
+        Ok(existing_user > 0)
+    }
+
+    pub async fn find_by_email(&self, email: &str) -> MongoResult<Option<User>> {
+        let collection = self.collection();
+        collection.find_one(doc! { "email": email }).await
+    }
+
+    pub async fn find_by_id(&self, id: &Oid) -> MongoResult<Option<User>> {
+        let collection = self.collection();
+        collection.find_one(doc! { "_id": id }).await
+    }
+
+    pub async fn update_user(&self, email: &str, new_password: &str) -> MongoResult<Option<User>> {
+        let collection = self.collection();
+
+        let hashed_password = hash_password(new_password).map_err(|e| {
+            mongodb::error::Error::custom(format!("Failed to hash password: {}", e))
+        })?;
+
+        let update_result = collection
+            .find_one_and_update(
+                doc! { "email": email },
+                doc! {
+                    "$set": {
+                        "password": hashed_password,
+                        "updated_at": BsonDateTime::from_system_time(Utc::now().into())
+                    }
+                },
+            )
+            .await?;
+
+        Ok(update_result)
+    }
+
+    pub async fn delete_user(&self, id: &Oid) -> MongoResult<bool> {
+        let collection = self.collection();
+        let result = collection.delete_one(doc! { "_id": id }).await?;
+        Ok(result.deleted_count > 0)
+    }
+
+    
+}
