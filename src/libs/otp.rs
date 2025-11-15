@@ -19,9 +19,9 @@ pub struct OtpCode {
 const OTP_TTL: i64 = 10 * 60;
 
 impl OtpCode {
-    pub async fn new() -> Self {
+    pub fn new() -> Self {
         let plain_otp = generate_otp();
-        let hashed_otp = hash_password(&plain_otp).await.unwrap();
+        let hashed_otp = hash_password(&plain_otp).unwrap();
         let expires_at = BsonDateTime::from_system_time(
             (chrono::Utc::now() + chrono::Duration::seconds(OTP_TTL)).into(),
         );

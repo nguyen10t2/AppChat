@@ -1,6 +1,5 @@
 use actix_web::cookie::{Cookie, SameSite, time};
 use actix_web::{HttpMessage, HttpRequest, HttpResponse, web};
-use chrono::DateTime;
 use serde::Deserialize;
 
 use crate::libs::hash::verify_password;
@@ -29,7 +28,6 @@ pub struct LoginRequest {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 pub struct VerifyOtpRequest {
     pub email: String,
     pub otp: String,
@@ -64,7 +62,7 @@ pub async fn register(
         }));
     }
 
-    let otp_code = OtpCode::new().await;
+    let otp_code = OtpCode::new();
 
     let email_owned = req.email.clone();
     let plain_otp_owned = otp_code.plain_otp.clone();
@@ -119,7 +117,6 @@ pub async fn login(
     };
 
     if !verify_password(&user.password, &req.password)
-        .await
         .unwrap_or(false)
     {
         return HttpResponse::Unauthorized().json(json!({
@@ -290,7 +287,7 @@ pub async fn verify_otp(
         }));
     }
 
-    match verify_password(stored_otp, otp).await {
+    match verify_password(stored_otp, otp) {
         Ok(true) => {}
         Ok(false) => {
             return HttpResponse::Unauthorized().json(json!({
@@ -391,7 +388,7 @@ pub async fn resend_otp(
         }));
     }
 
-    let otp_code = OtpCode::new().await;
+    let otp_code = OtpCode::new();
 
     if let Err(e) = otp_service
         .create_otp(&email, &otp_code.hashed_otp, otp_code.expires_at)

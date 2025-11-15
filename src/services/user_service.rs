@@ -42,7 +42,7 @@ impl UserService {
         password: &str,
     ) -> MongoResult<User> {
         let now = BsonDateTime::from_system_time(Utc::now().into());
-        let hashed_password = hash_password(password).await.map_err(|e| {
+        let hashed_password = hash_password(password).map_err(|e| {
             mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e))
         })?;
         let mut user = User {
@@ -84,7 +84,7 @@ impl UserService {
     }
 
     pub async fn update_user(&self, email: &str, new_password: &str) -> MongoResult<Option<User>> {
-        let hashed_password = hash_password(new_password).await.map_err(|e| {
+        let hashed_password = hash_password(new_password).map_err(|e| {
             mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e))
         })?;
 
