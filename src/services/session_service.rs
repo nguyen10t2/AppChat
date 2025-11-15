@@ -44,7 +44,8 @@ impl SessionService {
         refresh_token: String,
     ) -> mongodb::error::Result<()> {
         let session = Session {
-            user_id: Some(user_id),
+            id: None,
+            user_id: user_id.clone(),
             email,
             refresh_token,
             expires_at: BsonDateTime::from_system_time(

@@ -37,7 +37,6 @@ pub async fn verify_jwt<B: MessageBody>(
     next.call(req).await
 }
 
-#[allow(dead_code)]
 pub async fn verify_refresh_token<B: MessageBody>(
     req: ServiceRequest,
     next: Next<B>,
@@ -51,14 +50,14 @@ pub async fn verify_refresh_token<B: MessageBody>(
         .cloned()
         .ok_or_else(|| ErrorUnauthorized(json!({"error": "Không tìm thấy dịch vụ xác thực"})))?;
 
-    let sesstion = srv.find_one(&refresh_token).await
+    let session = srv.find_one(&refresh_token).await
         .map_err(|_| ErrorUnauthorized(json!({"error": "Lỗi khi truy xuất phiên"})))?
         .ok_or_else(|| ErrorUnauthorized(json!({"error": "Refresh token không hợp lệ"})))?;
 
-    if sesstion.expires_at.to_system_time() < std::time::SystemTime::now() {
+    if session.expires_at.to_system_time() < std::time::SystemTime::now() {
         return Err(ErrorUnauthorized(json!({"error": "Refresh token đã hết hạn"})));
     }
-
-    req.extensions_mut().insert(sesstion);
+    
+    req.extensions_mut().insert(session.clone());
     next.call(req).await
 }

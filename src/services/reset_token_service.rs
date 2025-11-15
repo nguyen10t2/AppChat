@@ -64,4 +64,10 @@ impl ResetTokenService {
         self.collection().delete_one(fillter).await?;
         Ok(())
     }
+
+    pub async fn find_one(&self, email: &str) -> mongodb::error::Result<Option<ResetToken>> {
+        let filter = doc! { "email": email };
+        let reset_token = self.collection().find_one(filter).await?;
+        Ok(reset_token)
+    }
 }

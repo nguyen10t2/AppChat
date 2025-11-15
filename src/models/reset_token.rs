@@ -1,7 +1,7 @@
 use serde::{Serialize, Deserialize};
 use mongodb::bson::{DateTime as BsonDateTime, oid::ObjectId};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ResetToken {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<ObjectId>,

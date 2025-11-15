@@ -7,7 +7,7 @@ pub async fn start_cleanup_task(
     session_service: web::Data<SessionService>,
     otp_service: web::Data<OtpService>,
 ) {
-    let mut interval = interval(Duration::from_secs(3600)); // 3600s = 1 giờ
+    let mut interval = interval(Duration::from_secs(3600));
 
     loop {
         interval.tick().await;

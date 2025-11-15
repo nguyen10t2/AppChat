@@ -76,7 +76,7 @@ impl UserService {
     }
 
     pub async fn find_by_email(&self, email: &str) -> MongoResult<Option<User>> {
-        self.collection().find_one(doc! { "email": email}).await
+        self.collection().find_one(doc! { "email": email, "is_active": true }).await
     }
 
     pub async fn find_by_id(&self, id: &Oid) -> MongoResult<Option<User>> {

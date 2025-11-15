@@ -111,8 +111,10 @@ impl OtpService {
             "is_used": false,
         };
         let update = doc! {
-            "$set": { "is_used": true },
-            "updated_at": BsonDateTime::from_system_time(chrono::Utc::now().into()),
+            "$set": {
+                "is_used": true,
+                "updated_at": BsonDateTime::from_system_time(chrono::Utc::now().into()),
+            }
         };
         self.collection()
             .update_many(filter, update)
