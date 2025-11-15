@@ -9,3 +9,7 @@ pub fn validation_password(password: &str) -> bool {
 pub fn validation_fullname(fullname: &str) -> bool {
     !fullname.trim().is_empty()
 }
+
+pub fn validation_otp(otp: &str) -> bool {
+    otp.len() == 6 && otp.chars().all(|c| c.is_digit(10))
+}

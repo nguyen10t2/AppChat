@@ -1,11 +1,15 @@
 use actix_web::cookie::{Cookie, SameSite, time};
-use actix_web::{HttpRequest, HttpResponse, web, HttpMessage};
+use actix_web::{HttpMessage, HttpRequest, HttpResponse, web};
+use chrono::DateTime;
 use serde::Deserialize;
 
 use crate::libs::hash::verify_password;
+use crate::libs::otp::OtpCode;
 use crate::models::session_model::Session;
 use crate::models::user_model::UserResponse;
 use crate::services::auth_service::AuthService;
+use crate::services::email_service::EmailService;
+use crate::services::otp_service::OtpService;
 use crate::services::session_service::SessionService;
 use crate::services::user_service::UserService;
 use crate::validations::validation::*;
@@ -25,6 +29,7 @@ pub struct LoginRequest {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct VerifyOtpRequest {
     pub email: String,
     pub otp: String,
@@ -32,6 +37,7 @@ pub struct VerifyOtpRequest {
 
 pub async fn register(
     user_service: web::Data<UserService>,
+    otp_service: web::Data<OtpService>,
     req: web::Json<RegisterRequest>,
 ) -> HttpResponse {
     if !validation_fullname(&req.fullname)
@@ -43,28 +49,47 @@ pub async fn register(
         }));
     }
 
-    match user_service.is_exists(&req.email).await {
-        Ok(true) => HttpResponse::Conflict().json(json!({
-            "error": "Người dùng đã tồn tại"
-        })),
-        Ok(false) => {
-            match user_service
-                .create_user(&req.fullname, &req.email, &req.password)
-                .await
-            {
-                Ok(user) => {
-                    let user_response = UserResponse::from(user);
-                    HttpResponse::Created().json(user_response)
-                }
-                Err(e) => HttpResponse::InternalServerError().json(json!({
-                    "error": format!("Lỗi khi tạo người dùng: {}", e)
-                })),
-            }
-        }
-        Err(e) => HttpResponse::InternalServerError().json(json!({
-            "error": format!("Lỗi hệ thống: {}", e)
-        })),
+    if let Ok(Some(_)) = user_service.find_by_email(&req.email).await {
+        return HttpResponse::Conflict().json(json!({
+            "error": "Email đã được sử dụng"
+        }));
     }
+
+    if let Err(e) = user_service
+        .create_user(&req.fullname, &req.email, &req.password)
+        .await
+    {
+        return HttpResponse::InternalServerError().json(json!({
+            "error": format!("Lỗi khi tạo người dùng: {}", e)
+        }));
+    }
+
+    let otp_code = OtpCode::new().await;
+
+    let email_owned = req.email.clone();
+    let plain_otp_owned = otp_code.plain_otp.clone();
+
+    if let Err(e) = otp_service
+        .create_otp(&req.email, &otp_code.hashed_otp, otp_code.expires_at)
+        .await
+    {
+        return HttpResponse::InternalServerError().json(json!({
+            "error": format!("Lỗi khi tạo mã OTP: {}", e)
+        }));
+    }
+
+    actix_web::rt::spawn(async move {
+        if let Err(e) = EmailService::new()
+            .send_otp_email(&email_owned, &plain_otp_owned)
+            .await
+        {
+            eprintln!("Lỗi khi gửi email OTP: {}", e);
+        }
+    });
+
+    HttpResponse::Ok().json(json!({
+        "message": "Đăng ký thành công. Vui lòng kiểm tra email để xác thực OTP."
+    }))
 }
 
 pub async fn login(
@@ -93,7 +118,10 @@ pub async fn login(
         }
     };
 
-    if !verify_password(&user.password, &req.password).unwrap_or(false) {
+    if !verify_password(&user.password, &req.password)
+        .await
+        .unwrap_or(false)
+    {
         return HttpResponse::Unauthorized().json(json!({
             "error": "Thông tin đăng nhập không đúng"
         }));
@@ -147,10 +175,7 @@ pub async fn login(
     }))
 }
 
-pub async fn logout(
-    session_service: web::Data<SessionService>,
-    req: HttpRequest
-) -> HttpResponse {
+pub async fn logout(session_service: web::Data<SessionService>, req: HttpRequest) -> HttpResponse {
     let token = req.cookie("refresh_token");
     if let Some(cookie) = token {
         let refresh_token = cookie.value();
@@ -168,8 +193,7 @@ pub async fn logout(
         HttpResponse::Ok().cookie(expired_cookie).json(json!({
             "message": "Đăng xuất thành công"
         }))
-    }
-    else {
+    } else {
         HttpResponse::BadRequest().json(json!({
             "error": "Không tìm thấy phiên làm việc"
         }))
@@ -210,8 +234,7 @@ pub async fn refresh_token(
         HttpResponse::Ok().json(json!({
             "access_token": access_token
         }))
-    }
-    else {
+    } else {
         HttpResponse::Unauthorized().json(json!({
             "error": "Phiên làm việc không hợp lệ"
         }))
@@ -220,7 +243,174 @@ pub async fn refresh_token(
 
 pub async fn verify_otp(
     user_service: web::Data<UserService>,
-
+    otp_service: web::Data<OtpService>,
+    req: web::Json<VerifyOtpRequest>,
 ) -> HttpResponse {
-    HttpResponse::Ok().finish()
+    let email = &req.email;
+    let otp = &req.otp;
+    if !validation_email(email) || !validation_otp(otp) {
+        return HttpResponse::BadRequest().json(json!({
+            "error": "Thông tin không hợp lệ"
+        }));
+    }
+    match user_service.find_by_email(email).await {
+        Ok(Some(_user)) => {}
+        Ok(None) => {
+            return HttpResponse::NotFound().json(json!({
+                "error": "Người dùng không tồn tại"
+            }));
+        }
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("Lỗi khi lấy người dùng: {}", e)
+            }));
+        }
+    };
+
+    let otp_record = match otp_service.get_otp_record(email).await {
+        Ok(Some(otp_record)) => otp_record,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(json!({
+                "error": "Mã OTP không hợp lệ hoặc đã được sử dụng"
+            }));
+        }
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("Lỗi khi lấy mã OTP: {}", e)
+            }));
+        }
+    };
+
+    let stored_otp = &otp_record.code;
+    let expires_at = &otp_record.expires_at;
+    let now = mongodb::bson::DateTime::from_system_time(chrono::Utc::now().into());
+    if &now > expires_at {
+        return HttpResponse::BadRequest().json(json!({
+            "error": "Mã OTP đã hết hạn"
+        }));
+    }
+
+    match verify_password(stored_otp, otp).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return HttpResponse::Unauthorized().json(json!({
+                "error": "Mã OTP không đúng"
+            }));
+        }
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("Lỗi khi xác thực mã OTP: {}", e)
+            }));
+        }
+    };
+
+    let (user_res, otp_res) = tokio::join!(
+        user_service.activate_user(email),
+        otp_service.updated_otp(email)
+    );
+
+    if let Err(e) = user_res {
+        return HttpResponse::InternalServerError().json(json!({
+            "error": format!("Lỗi khi kích hoạt người dùng: {}", e)
+        }));
+    }
+    if let Err(e) = otp_res {
+        return HttpResponse::InternalServerError().json(json!({
+            "error": format!("Lỗi khi cập nhật mã OTP: {}", e)
+        }));
+    }
+
+    HttpResponse::Ok().json(json!({
+        "message": "Xác thực OTP thành công"
+    }))
+}
+
+pub async fn resend_otp(
+    otp_service: web::Data<OtpService>,
+    user_service: web::Data<UserService>,
+    email: String,
+) -> HttpResponse {
+    if !validation_email(&email) {
+        return HttpResponse::BadRequest().json(json!({
+            "error": "Email không hợp lệ"
+        }));
+    }
+    match user_service.find_by_email(&email).await {
+        Ok(Some(_user)) => {}
+        Ok(None) => {
+            return HttpResponse::NotFound().json(json!({
+                "error": "Người dùng không tồn tại"
+            }));
+        }
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("Lỗi khi lấy người dùng: {}", e)
+            }));
+        }
+    };
+
+    let last_otp = match otp_service.get_last_otp(&email).await {
+        Ok(Some(otp)) => otp,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(json!({
+                "error": "Không tìm thấy mã OTP trước đó"
+            }));
+        }
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("Lỗi khi lấy mã OTP: {}", e)
+            }));
+        }
+    };
+
+    let created_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+        last_otp.created_at.timestamp_millis(),
+    )
+    .expect("Invalid timestamp");
+
+    let elapsed = chrono::Utc::now() - created_at;
+
+    if elapsed.num_seconds() < 30 {
+        return HttpResponse::TooManyRequests().json(json!({
+            "error": "Vui lòng chờ trước khi yêu cầu mã OTP mới",
+            "retry_after": 30 - elapsed.num_seconds()
+        }));
+    }
+
+    let resend_count = match otp_service.resend_count(&email).await {
+        Ok(count) => count,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": format!("Lỗi khi lấy số lần gửi lại mã OTP: {}", e)
+            }));
+        }
+    };
+    if resend_count >= 5 {
+        return HttpResponse::TooManyRequests().json(json!({
+            "error": "Đã vượt quá số lần gửi lại mã OTP trong ngày"
+        }));
+    }
+
+    let otp_code = OtpCode::new().await;
+
+    if let Err(e) = otp_service
+        .create_otp(&email, &otp_code.hashed_otp, otp_code.expires_at)
+        .await
+    {
+        return HttpResponse::InternalServerError().json(json!({
+            "error": format!("Lỗi khi tạo mã OTP: {}", e)
+        }));
+    }
+
+    actix_web::rt::spawn(async move {
+        if let Err(e) = EmailService::new()
+            .send_otp_email(&email, &otp_code.plain_otp)
+            .await
+        {
+            eprintln!("Lỗi khi gửi email OTP: {}", e);
+        }
+    });
+    HttpResponse::Ok().json(json!({
+        "message": "Gửi lại mã OTP thành công. Vui lòng kiểm tra email."
+    }))
 }

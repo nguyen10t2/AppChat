@@ -1,21 +1,22 @@
-use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use actix_cors::Cors;
+use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use dotenvy::dotenv;
 use std::env;
 
 use crate::routes::{auth_route, user_route};
 
 use crate::services::auth_service::AuthService;
+use crate::services::otp_service::OtpService;
 use crate::services::session_service::SessionService;
 use crate::services::user_service::UserService;
 
-mod libs;
 mod controllers;
-mod routes;
+mod libs;
+mod middlewares;
 mod models;
+mod routes;
 mod services;
 mod validations;
-mod middlewares;
 
 #[get("/")]
 async fn hello() -> impl Responder {
@@ -40,17 +41,32 @@ async fn main() -> std::io::Result<()> {
         secret_key,
         access_token_ttl: ACCESS_TOKEN_TTL,
     });
-    let user_service = web::Data::new(UserService {
-        db: _db.clone()
-    });
+    let user_service = web::Data::new(UserService { db: _db.clone() });
     let session_service = web::Data::new(SessionService {
         db: _db.clone(),
-        refresh_token_ttl: REFRESH_TOKEN_TTL
+        refresh_token_ttl: REFRESH_TOKEN_TTL,
     });
+    let otp_service = web::Data::new(OtpService { db: _db.clone() });
 
-    session_service.init_indexes().await.expect("Failed to initialize session indexes");
+    user_service
+        .init_indexes()
+        .await
+        .expect("Failed to initialize user indexes");
+    session_service
+        .init_indexes()
+        .await
+        .expect("Failed to initialize session indexes");
+    otp_service
+        .init_indexes()
+        .await
+        .expect("Failed to initialize OTP indexes");
 
     println!("Starting server at http://{}:{}", ip_address, port);
+
+    tokio::spawn(libs::clear_rubbish::start_cleanup_task(
+        session_service.clone(),
+        otp_service.clone(),  
+    ));
 
     HttpServer::new(move || {
         let cors = Cors::permissive();
@@ -61,12 +77,12 @@ async fn main() -> std::io::Result<()> {
             .app_data(auth_service.clone())
             .app_data(user_service.clone())
             .app_data(session_service.clone())
+            .app_data(otp_service.clone())
             .configure(auth_route::config)
             .configure(user_route::config)
             .service(hello)
     })
-
-    .bind(format!("{}:{}", ip_address, port))? 
+    .bind(format!("{}:{}", ip_address, port))?
     .run()
     .await
 }

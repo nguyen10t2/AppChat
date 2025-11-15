@@ -42,7 +42,7 @@ impl UserService {
         password: &str,
     ) -> MongoResult<User> {
         let now = BsonDateTime::from_system_time(Utc::now().into());
-        let hashed_password = hash_password(password).map_err(|e| {
+        let hashed_password = hash_password(password).await.map_err(|e| {
             mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e))
         })?;
         let mut user = User {
@@ -76,7 +76,7 @@ impl UserService {
     }
 
     pub async fn find_by_email(&self, email: &str) -> MongoResult<Option<User>> {
-        self.collection().find_one(doc! { "email": email, "is_active": true }).await
+        self.collection().find_one(doc! { "email": email}).await
     }
 
     pub async fn find_by_id(&self, id: &Oid) -> MongoResult<Option<User>> {
@@ -84,7 +84,7 @@ impl UserService {
     }
 
     pub async fn update_user(&self, email: &str, new_password: &str) -> MongoResult<Option<User>> {
-        let hashed_password = hash_password(new_password).map_err(|e| {
+        let hashed_password = hash_password(new_password).await.map_err(|e| {
             mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e))
         })?;
 
@@ -106,5 +106,17 @@ impl UserService {
         Ok(result.deleted_count > 0)
     }
 
-    
+    pub async fn activate_user(&self, email: &str) -> MongoResult<Option<User>> {
+        self.collection()
+            .find_one_and_update(
+                doc! { "email": email },
+                doc! {
+                    "$set": {
+                        "is_active": true,
+                        "updated_at": BsonDateTime::from_system_time(Utc::now().into())
+                    }
+                },
+            )
+            .await
+    }
 }

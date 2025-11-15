@@ -16,7 +16,7 @@ impl SessionService {
 
     pub async fn init_indexes(&self) -> mongodb::error::Result<()> {
         let ttl_index = IndexModel::builder()
-            .keys(doc! { "expires_at": 1, "refresh_token": 1 })
+            .keys(doc! { "expires_at": 1 })
             .options(
                 mongodb::options::IndexOptions::builder()
                     .expire_after(std::time::Duration::from_secs(0))
@@ -24,7 +24,16 @@ impl SessionService {
             )
             .build();
 
-        self.collection().create_indexes([ttl_index]).await?;
+        let token_index = IndexModel::builder()
+            .keys(doc! { "refresh_token": 1 })
+            .options(
+                mongodb::options::IndexOptions::builder()
+                    .unique(true) // tuỳ bạn có cần unique không
+                    .build(),
+            )
+            .build();
+        
+        self.collection().create_indexes([ttl_index, token_index]).await?;
         Ok(())
     }
 
@@ -63,5 +72,13 @@ impl SessionService {
         self.collection()
             .find_one(doc! { "refresh_token": refresh_token })
             .await
+    }
+
+    pub async fn cleanup_expired(&self) -> mongodb::error::Result<()> {
+        let filter = doc! {
+            "expires_at": { "$lt": BsonDateTime::from_system_time(chrono::Utc::now().into()) }
+        };
+        self.collection().delete_many(filter).await?;
+        Ok(())
     }
 }

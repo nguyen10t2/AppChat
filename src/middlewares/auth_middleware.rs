@@ -37,6 +37,7 @@ pub async fn verify_jwt<B: MessageBody>(
     next.call(req).await
 }
 
+#[allow(dead_code)]
 pub async fn verify_refresh_token<B: MessageBody>(
     req: ServiceRequest,
     next: Next<B>,
