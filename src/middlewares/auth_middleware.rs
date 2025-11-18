@@ -17,9 +17,7 @@ pub async fn verify_jwt<B: MessageBody>(
         .headers()
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
-        .and_then(|header| {
-            header.strip_prefix("Bearer ").map(|s| s.to_string())
-        })
+        .and_then(|header| header.strip_prefix("Bearer "))
         .ok_or_else(|| ErrorUnauthorized(json!({"error": "Không tìm thấy access token"})))?;
 
     let srv = req
@@ -58,6 +56,6 @@ pub async fn verify_refresh_token<B: MessageBody>(
         return Err(ErrorUnauthorized(json!({"error": "Refresh token đã hết hạn"})));
     }
     
-    req.extensions_mut().insert(session.clone());
+    req.extensions_mut().insert(session);
     next.call(req).await
 }

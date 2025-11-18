@@ -1,0 +1,12 @@
+use mongodb::bson::oid::ObjectId;
+use mongodb::bson::DateTime as BsonDateTime;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct FriendRequest {
+    pub from: ObjectId,
+    pub to: ObjectId,
+    pub message: Option<String>,
+    pub created_at: BsonDateTime,
+    pub updated_at: BsonDateTime,
+}

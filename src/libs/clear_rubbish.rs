@@ -1,26 +1,21 @@
 use actix_web::web;
 use tokio::time::{interval, Duration};
 
-use crate::services::{session_service::SessionService, otp_service::OtpService};
+use crate::services::otp_service::OtpService;
 
 pub async fn start_cleanup_task(
-    session_service: web::Data<SessionService>,
     otp_service: web::Data<OtpService>,
 ) {
     let mut interval = interval(Duration::from_secs(3600));
 
     loop {
         interval.tick().await;
-        println!("Running cleanup...");
-
-        if let Err(e) = session_service.cleanup_expired().await {
-            eprintln!("Error cleaning sessions: {:?}", e);
-        }
+        println!("Đang dọng rác...");
 
         if let Err(e) = otp_service.delete_otp().await {
-            eprintln!("Error cleaning OTPs: {:?}", e);
+            eprintln!("Lỗi khi dọn rác: {:?}", e);
         }
 
-        println!("Cleanup finished");
+        println!("Dọn dẹp hoàn tất");
     }
 }

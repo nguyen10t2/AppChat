@@ -4,3 +4,7 @@ pub mod session_service;
 pub mod otp_service;
 pub mod reset_token_service;
 pub mod email_service;
+pub mod message_service;
+pub mod conversation_service;
+pub mod friend_service;
+pub mod friend_request_service;

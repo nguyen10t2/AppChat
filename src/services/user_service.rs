@@ -13,7 +13,6 @@ pub struct UserService {
 
 #[allow(dead_code)]
 impl UserService {
-
     fn collection(&self) -> Collection<User> {
         self.db.collection::<User>("users")
     }
@@ -42,9 +41,8 @@ impl UserService {
         password: &str,
     ) -> MongoResult<User> {
         let now = BsonDateTime::from_system_time(Utc::now().into());
-        let hashed_password = hash_password(password).map_err(|e| {
-            mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e))
-        })?;
+        let hashed_password = hash_password(password)
+            .map_err(|e| mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e)))?;
         let mut user = User {
             id: None,
             fullname: fullname.to_string(),
@@ -71,22 +69,25 @@ impl UserService {
     }
 
     pub async fn is_exists(&self, email: &str) -> MongoResult<bool> {
-        let count = self.collection().count_documents(doc! { "email": email }).await?;
-        Ok(count > 0)
+        let user = self.collection().find_one(doc! { "email": email }).await?;
+        Ok(user.is_some())
     }
 
     pub async fn find_by_email(&self, email: &str) -> MongoResult<Option<User>> {
-        self.collection().find_one(doc! { "email": email, "is_active": true }).await
+        self.collection()
+            .find_one(doc! { "email": email, "is_active": true })
+            .await
     }
 
     pub async fn find_by_id(&self, id: &Oid) -> MongoResult<Option<User>> {
-        self.collection().find_one(doc! { "_id": id, "is_active": true }).await
+        self.collection()
+            .find_one(doc! { "_id": id, "is_active": true })
+            .await
     }
 
     pub async fn update_user(&self, email: &str, new_password: &str) -> MongoResult<Option<User>> {
-        let hashed_password = hash_password(new_password).map_err(|e| {
-            mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e))
-        })?;
+        let hashed_password = hash_password(new_password)
+            .map_err(|e| mongodb::error::Error::custom(format!("Lỗi khi băm mật khẩu: {}", e)))?;
 
         self.collection()
             .find_one_and_update(
@@ -106,9 +107,10 @@ impl UserService {
         Ok(result.deleted_count > 0)
     }
 
-    pub async fn activate_user(&self, email: &str) -> MongoResult<Option<User>> {
-        self.collection()
-            .find_one_and_update(
+    pub async fn activate_user(&self, email: &str) -> MongoResult<bool> {
+        let result = self
+            .collection()
+            .update_one(
                 doc! { "email": email },
                 doc! {
                     "$set": {
@@ -117,6 +119,7 @@ impl UserService {
                     }
                 },
             )
-            .await
+            .await?;
+        Ok(result.modified_count > 0)
     }
 }

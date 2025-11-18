@@ -1,6 +1,8 @@
 use mongodb::bson::oid::ObjectId;
 use mongodb::bson::{DateTime as BsonDateTime, doc};
+use mongodb::options::UpdateOptions;
 use mongodb::{Collection, Database, IndexModel};
+use mongodb::error::Result as MongoResult;
 
 use crate::models::session_model::Session;
 
@@ -14,7 +16,7 @@ impl SessionService {
         self.db.collection::<Session>("sessions")
     }
 
-    pub async fn init_indexes(&self) -> mongodb::error::Result<()> {
+    pub async fn init_indexes(&self) -> MongoResult<()> {
         let ttl_index = IndexModel::builder()
             .keys(doc! { "expires_at": 1 })
             .options(
@@ -43,43 +45,45 @@ impl SessionService {
         email: String,
         refresh_token: String,
     ) -> mongodb::error::Result<()> {
-        let session = Session {
-            id: None,
-            user_id: user_id.clone(),
-            email,
-            refresh_token,
-            expires_at: BsonDateTime::from_system_time(
-                chrono::Utc::now()
-                    .checked_add_signed(chrono::Duration::seconds(self.refresh_token_ttl))
-                    .unwrap()
-                    .into(),
-            ),
-            created_at: BsonDateTime::from_system_time(chrono::Utc::now().into()),
-            updated_at: BsonDateTime::from_system_time(chrono::Utc::now().into()),
-        };
+        let now = BsonDateTime::from_system_time(chrono::Utc::now().into());
 
-        self.collection().insert_one(&session).await?;
+        self.collection()
+            .update_one(
+                doc! { "refresh_token": &refresh_token },
+                doc! {
+                    "$set": {
+                        "user_id": user_id,
+                        "email": email,
+                        "expires_at": BsonDateTime::from_system_time(
+                            chrono::Utc::now()
+                                .checked_add_signed(chrono::Duration::seconds(self.refresh_token_ttl))
+                                .unwrap()
+                                .into()
+                        ),
+                        "updated_at": now,
+                    },
+                    "$setOnInsert": {
+                        "created_at": now,
+                    }
+                },
+            )
+            .with_options(
+                UpdateOptions::builder().upsert(true).build()
+            )
+            .await?;
         Ok(())
     }
 
-    pub async fn delete_session(&self, refresh_token: &str) -> mongodb::error::Result<()> {
-        self.collection()
+    pub async fn delete_session(&self, refresh_token: &str) -> mongodb::error::Result<bool> {
+        let result =self.collection()
             .delete_one(doc! { "refresh_token": refresh_token })
             .await?;
-        Ok(())
+        Ok(result.deleted_count > 0)
     }
 
     pub async fn find_one(&self, refresh_token: &str) -> mongodb::error::Result<Option<Session>> {
         self.collection()
             .find_one(doc! { "refresh_token": refresh_token })
             .await
-    }
-
-    pub async fn cleanup_expired(&self) -> mongodb::error::Result<()> {
-        let filter = doc! {
-            "expires_at": { "$lt": BsonDateTime::from_system_time(chrono::Utc::now().into()) }
-        };
-        self.collection().delete_many(filter).await?;
-        Ok(())
     }
 }

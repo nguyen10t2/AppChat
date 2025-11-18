@@ -51,20 +51,19 @@ async fn main() -> std::io::Result<()> {
     user_service
         .init_indexes()
         .await
-        .expect("Failed to initialize user indexes");
+        .expect("Lỗi khi đánh index trong users");
     session_service
         .init_indexes()
         .await
-        .expect("Failed to initialize session indexes");
+        .expect("Lỗi khi đánh index trong sessions");
     otp_service
         .init_indexes()
         .await
-        .expect("Failed to initialize OTP indexes");
+        .expect("Lỗi khi đánh index trong otps");
 
-    println!("Starting server at http://{}:{}", ip_address, port);
+    println!("Máy chủ đang chạy tại http://{}:{}", ip_address, port);
 
     tokio::spawn(libs::clear_rubbish::start_cleanup_task(
-        session_service.clone(),
         otp_service.clone(),  
     ));
 

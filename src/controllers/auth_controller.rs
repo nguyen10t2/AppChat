@@ -552,7 +552,7 @@ pub async fn reset_password(
         return HttpResponse::InternalServerError().json(json!({ "error": format!("Lỗi khi cập nhật mật khẩu: {}", e) }));
     }
 
-    if let Err(e) = reset_token_service.delete_one(&email).await {
+    if let Err(e) = reset_token_service.delete_by_email_or_expired(&email).await {
         return HttpResponse::InternalServerError().json(json!({ "error": format!("Lỗi khi xóa reset token: {}", e) }));
     }
 
