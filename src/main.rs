@@ -7,6 +7,7 @@ use crate::routes::{auth_route, user_route};
 
 use crate::services::auth_service::AuthService;
 use crate::services::otp_service::OtpService;
+use crate::services::reset_token_service::ResetTokenService;
 use crate::services::session_service::SessionService;
 use crate::services::user_service::UserService;
 
@@ -47,6 +48,7 @@ async fn main() -> std::io::Result<()> {
         refresh_token_ttl: REFRESH_TOKEN_TTL,
     });
     let otp_service = web::Data::new(OtpService { db: _db.clone() });
+    let reset_token_service = web::Data::new(ResetTokenService {db: _db.clone()});
 
     user_service
         .init_indexes()
@@ -63,9 +65,7 @@ async fn main() -> std::io::Result<()> {
 
     println!("Máy chủ đang chạy tại http://{}:{}", ip_address, port);
 
-    tokio::spawn(libs::clear_rubbish::start_cleanup_task(
-        otp_service.clone(),  
-    ));
+    tokio::spawn(libs::clear_rubbish::start_cleanup_task(otp_service.clone()));
 
     HttpServer::new(move || {
         let cors = Cors::permissive();
@@ -77,6 +77,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(user_service.clone())
             .app_data(session_service.clone())
             .app_data(otp_service.clone())
+            .app_data(reset_token_service.clone())
             .configure(auth_route::config)
             .configure(user_route::config)
             .service(hello)

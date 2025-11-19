@@ -1,4 +1,3 @@
-use mongodb::action::Update;
 use mongodb::bson::DateTime as BsonDateTime;
 use mongodb::error::Result as MongoResult;
 use mongodb::options::UpdateOptions;
