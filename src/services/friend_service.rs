@@ -1,4 +1,5 @@
 use mongodb::Database;
+use mongodb::bson::oid::ObjectId;
 use mongodb::error::Result as MongoResult;
 use mongodb::bson::DateTime as BsonDateTime;
 
@@ -27,5 +28,9 @@ impl FriendService {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn find_one(&self, user_id_a: ObjectId, user_id_b: ObjectId) -> MongoResult<bool> {
+        
     }
 }

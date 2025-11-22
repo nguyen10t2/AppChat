@@ -16,17 +16,24 @@ pub fn generate_reset_token() -> String {
     token
 }
 
+const RESET_TOKEN_TTL_MINUTES: i64 = 30;
+
 pub struct ResetToken {
     pub hashed_token: String,
     pub expires_at: mongodb::bson::DateTime,
 }
 
 impl ResetToken {
-    pub fn new() -> Self {
+    pub async fn new() -> Self {
         use crate::libs::hash::hash_password;
-        let hashed_token = hash_password(&generate_reset_token()).unwrap();
+        let hashed_token = {
+            let token = generate_reset_token();
+            tokio::task::spawn_blocking(move || hash_password(&token).unwrap())
+                .await
+                .unwrap()
+        };
         let expires_at = mongodb::bson::DateTime::from_system_time(
-            (chrono::Utc::now() + chrono::Duration::minutes(30)).into(),
+            (chrono::Utc::now() + chrono::Duration::minutes(RESET_TOKEN_TTL_MINUTES)).into(),
         );
         ResetToken {
             hashed_token,

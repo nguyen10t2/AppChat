@@ -81,7 +81,7 @@ pub async fn register(
         }));
     }
 
-    let otp_code = OtpCode::new();
+    let otp_code = OtpCode::new().await;
 
     let email_owned = req.email.clone();
     let plain_otp_owned = otp_code.plain_otp.clone();
@@ -413,7 +413,7 @@ pub async fn resend_otp(
         }));
     }
 
-    let otp_code = OtpCode::new();
+    let otp_code = OtpCode::new().await;
 
     if let Err(e) = otp_service
         .create_otp(&email, &otp_code.hashed_otp, otp_code.expires_at)
@@ -448,7 +448,7 @@ pub async fn forget_password(
             "error": "Email không hợp lệ"
         }));
     }
-    let otp_code = OtpCode::new();
+    let otp_code = OtpCode::new().await;
     match otp_service
         .create_otp(&email, &otp_code.hashed_otp, otp_code.expires_at)
         .await
@@ -461,7 +461,7 @@ pub async fn forget_password(
         }
     };
     
-    let reset_token = ResetToken::new();
+    let reset_token = ResetToken::new().await;
     match reset_token_service
         .create_reset_token(
             &email,

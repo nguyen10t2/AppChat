@@ -1,11 +1,12 @@
 use jsonwebtoken::{
     DecodingKey, EncodingKey, Header, Validation, decode, encode, errors::Error as JwtError,
 };
+use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct Claims {
-    pub user_id: String,
+    pub user_id: ObjectId,
     pub email: String,
     pub exp: i64,
 }
@@ -24,7 +25,7 @@ impl AuthService {
         email: &str,
     ) -> Result<String, JwtError> {
         let claims = Claims {
-            user_id: user_id.to_string(),
+            user_id: ObjectId::parse_str(user_id).unwrap(),
             email: email.to_string(),
             exp: chrono::Utc::now().timestamp() + self.access_token_ttl,
         };
@@ -38,7 +39,7 @@ impl AuthService {
 
     pub async fn create_refresh_token(&self, user_id: &str, email: &str) -> Result<String, JwtError> {
         let claims = Claims {
-            user_id: user_id.to_string(),
+            user_id: ObjectId::parse_str(user_id).unwrap(),
             email: email.to_string(),
             exp: chrono::Utc::now().timestamp() + (7 * 24 * 60 * 60),
         };

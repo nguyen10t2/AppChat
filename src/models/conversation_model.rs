@@ -17,17 +17,18 @@ pub struct Participant {
 
 #[derive(Serialize, Deserialize)]
 pub struct Group {
-    pub name: String,
-    pub created_by: ObjectId,
+    pub name: Option<String>,
+    pub created_by: Option<ObjectId>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct LastMessage {
     pub _id: String,
-    #[serde(default)]
+    #[serde(default = "Option::default")]
     pub content: Option<String>,
-    pub sender_id: ObjectId,
-    pub created_at: BsonDateTime,
+    pub sender_id: Option<ObjectId>,
+    #[serde(default = "Option::default")]
+    pub created_at: Option<BsonDateTime>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -38,8 +39,8 @@ pub struct Conversation {
     pub participant_ids: Vec<Participant>,
     pub group: Option<Group>,
     pub last_message_at: Option<BsonDateTime>,
-    pub seen_by: Vec<ObjectId>,
-    #[serde(default)]
+    pub seen_by: Option<Vec<ObjectId>>,
+    #[serde(default = "Option::default")]
     pub last_message: Option<LastMessage>,
     #[serde(default)]
     pub unread_counts: HashMap<String, i32>,

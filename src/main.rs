@@ -3,7 +3,7 @@ use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use dotenvy::dotenv;
 use std::env;
 
-use crate::routes::{auth_route, user_route};
+use crate::routes::{auth_route, friend_routes, user_route};
 
 use crate::services::auth_service::AuthService;
 use crate::services::otp_service::OtpService;
@@ -80,6 +80,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(reset_token_service.clone())
             .configure(auth_route::config)
             .configure(user_route::config)
+            .configure(friend_routes::config)
             .service(hello)
     })
     .bind(format!("{}:{}", ip_address, port))?

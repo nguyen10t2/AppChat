@@ -1,5 +1,4 @@
 use mongodb::error::Result as MongoResult;
-use mongodb::bson::{DateTime as BsonDateTime};
 use mongodb::Database;
 
 use crate::models::friend_request_model::FriendRequest;

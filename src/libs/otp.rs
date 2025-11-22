@@ -1,5 +1,8 @@
+use core::hash;
+
 use mongodb::bson::DateTime as BsonDateTime;
 use rand::Rng;
+use tokio::task;
 
 use crate::libs::hash::hash_password;
 
@@ -19,9 +22,14 @@ pub struct OtpCode {
 const OTP_TTL: i64 = 10 * 60;
 
 impl OtpCode {
-    pub fn new() -> Self {
+    pub async fn new() -> Self {
         let plain_otp = generate_otp();
-        let hashed_otp = hash_password(&plain_otp).unwrap();
+        let hashed_otp = {
+            let otp_clone = plain_otp.clone();
+            task::spawn_blocking(move || hash_password(&otp_clone).unwrap())
+                .await
+                .unwrap()
+        };
         let expires_at = BsonDateTime::from_system_time(
             (chrono::Utc::now() + chrono::Duration::seconds(OTP_TTL)).into(),
         );
