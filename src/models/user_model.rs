@@ -17,10 +17,8 @@ pub struct User {
     #[serde(default)]
     pub is_active: bool,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<BsonDateTime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<BsonDateTime>,
+    pub created_at: BsonDateTime,
+    pub updated_at: BsonDateTime,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -35,10 +33,17 @@ pub struct UserResponse {
     pub bio: Option<String>,
     pub phone: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<BsonDateTime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<BsonDateTime>,
+    pub created_at: BsonDateTime,
+    pub updated_at: BsonDateTime,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserPreview {
+    #[serde(rename = "_id")]
+    pub id: ObjectId,
+    pub fullname: Option<String>,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
 }
 
 #[allow(dead_code)]

@@ -12,3 +12,17 @@ pub struct FriendRequest {
     pub created_at: BsonDateTime,
     pub updated_at: BsonDateTime,
 }
+
+impl FriendRequest {
+    pub fn new(from: ObjectId, to: ObjectId, message: Option<String>) -> Self {
+        let now = BsonDateTime::now();
+        FriendRequest {
+            id: None,
+            from,
+            to,
+            message,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}

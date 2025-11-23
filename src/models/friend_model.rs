@@ -2,12 +2,25 @@ use serde::{Deserialize, Serialize};
 use mongodb::bson::oid::ObjectId;
 use mongodb::bson::DateTime as BsonDateTime;
 
+use crate::models::user_model::UserPreview;
+
 #[derive(Serialize, Deserialize)]
 pub struct Friend {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<ObjectId>,
     pub user_a_id: ObjectId,
     pub user_b_id: ObjectId,
+    pub created_at: BsonDateTime,
+    pub updated_at: BsonDateTime,
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PopulatedFriendShip{
+    #[serde(rename = "_id")]
+    pub id: ObjectId,
+    pub user_a: UserPreview,
+    pub user_b: UserPreview,
     pub created_at: BsonDateTime,
     pub updated_at: BsonDateTime,
 }

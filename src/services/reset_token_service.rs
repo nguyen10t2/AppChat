@@ -64,7 +64,6 @@ impl ResetTokenService {
     }
 
     pub async fn delete_by_email_or_expired(&self, email: &str) -> MongoResult<u64> {
-        //  expires_at < NOW() - INTERVAL '1 day'
         let fillter = doc! {
             "$or": [
                 { "email": email },

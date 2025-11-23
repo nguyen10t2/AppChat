@@ -1,8 +1,10 @@
 use crate::libs::hash::hash_password;
-use crate::models::user_model::User;
+use crate::models::user_model::{User, UserPreview};
 use chrono::Utc;
+use futures::stream::TryStreamExt;
+use mongodb::bson::from_document;
 use mongodb::bson::oid::ObjectId as Oid;
-use mongodb::bson::{DateTime as BsonDateTime, doc};
+use mongodb::bson::{DateTime as BsonDateTime, doc, Document};
 use mongodb::error::Result as MongoResult;
 use mongodb::{Collection, Database};
 
@@ -53,8 +55,8 @@ impl UserService {
             bio: None,
             phone: None,
             is_active: false,
-            created_at: Some(now),
-            updated_at: Some(now),
+            created_at: now,
+            updated_at: now,
         };
 
         let insert_result = self.collection().insert_one(&user).await?;
@@ -121,5 +123,21 @@ impl UserService {
             )
             .await?;
         Ok(result.modified_count > 0)
+    }
+
+    pub async fn find_by_id_preview(
+        &self,
+        id: &Oid,
+    ) -> MongoResult<Option<UserPreview>> {
+        let filter = doc! { "_id": id, "is_active": true };
+        let projection = doc! {
+            "_id": 1,
+            "fullname": 1,
+            "avatar_url": 1,
+        };
+        self.db.collection::<UserPreview>("users")
+            .find_one(filter)
+            .projection(projection)
+            .await
     }
 }

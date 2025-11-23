@@ -75,36 +75,24 @@ impl OtpService {
             "email": email,
             "is_used": false,
         };
-        let mut cursor = self
-            .collection()
-            .find(filter)
-            .sort(doc! { "created_at": -1 })
-            .limit(1)
-            .await?;
-
-        if cursor.advance().await? {
-            Ok(Some(cursor.deserialize_current()?))
-        } else {
-            Ok(None)
-        }
+        
+        let sort = doc! { "created_at": -1 };
+        self.collection()
+            .find_one(filter)
+            .sort(sort)
+            .await
     }
 
     pub async fn get_last_otp(&self, email: &str) -> MongoResult<Option<Otp>> {
         let filter = doc! {
             "email": email,
         };
-        let mut cursor = self
-            .collection()
-            .find(filter)
-            .sort(doc! { "created_at": -1 })
-            .limit(1)
-            .await?;
-
-        if cursor.advance().await? {
-            Ok(Some(cursor.deserialize_current()?))
-        } else {
-            Ok(None)
-        }
+        
+        let sort = doc! { "created_at": -1 };
+        self.collection()
+            .find_one(filter)
+            .sort(sort)
+            .await
     }
 
     pub async fn updated_otp(&self, email: &str) -> MongoResult<bool> {

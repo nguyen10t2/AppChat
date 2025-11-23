@@ -6,6 +6,8 @@ use std::env;
 use crate::routes::{auth_route, friend_routes, user_route};
 
 use crate::services::auth_service::AuthService;
+use crate::services::friend_request_service::FriendRequestService;
+use crate::services::friend_service::FriendService;
 use crate::services::otp_service::OtpService;
 use crate::services::reset_token_service::ResetTokenService;
 use crate::services::session_service::SessionService;
@@ -24,8 +26,8 @@ async fn hello() -> impl Responder {
     HttpResponse::Ok().body("Hello, world!")
 }
 
-const REFRESH_TOKEN_TTL: i64 = 7 * 24 * 60 * 60;
-const ACCESS_TOKEN_TTL: i64 = 15 * 60;
+pub const REFRESH_TOKEN_TTL: i64 = 7 * 24 * 60 * 60;
+pub const ACCESS_TOKEN_TTL: i64 = 15 * 60;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -40,7 +42,6 @@ async fn main() -> std::io::Result<()> {
 
     let auth_service = web::Data::new(AuthService {
         secret_key,
-        access_token_ttl: ACCESS_TOKEN_TTL,
     });
     let user_service = web::Data::new(UserService { db: _db.clone() });
     let session_service = web::Data::new(SessionService {
@@ -49,6 +50,8 @@ async fn main() -> std::io::Result<()> {
     });
     let otp_service = web::Data::new(OtpService { db: _db.clone() });
     let reset_token_service = web::Data::new(ResetTokenService {db: _db.clone()});
+    let friend_service = web::Data::new(FriendService { db: _db.clone() });
+    let friend_request_service = web::Data::new(FriendRequestService { db: _db.clone() });
 
     user_service
         .init_indexes()
@@ -78,6 +81,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(session_service.clone())
             .app_data(otp_service.clone())
             .app_data(reset_token_service.clone())
+            .app_data(friend_service.clone())
+            .app_data(friend_request_service.clone())
             .configure(auth_route::config)
             .configure(user_route::config)
             .configure(friend_routes::config)

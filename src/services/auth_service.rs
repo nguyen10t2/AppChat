@@ -14,7 +14,6 @@ pub struct Claims {
 #[derive(Clone)]
 pub struct AuthService {
     pub secret_key: String,
-    pub access_token_ttl: i64,
 }
 
 impl AuthService {
@@ -27,7 +26,7 @@ impl AuthService {
         let claims = Claims {
             user_id: ObjectId::parse_str(user_id).unwrap(),
             email: email.to_string(),
-            exp: chrono::Utc::now().timestamp() + self.access_token_ttl,
+            exp: chrono::Utc::now().timestamp() + crate::ACCESS_TOKEN_TTL,
         };
 
         encode(
@@ -41,7 +40,7 @@ impl AuthService {
         let claims = Claims {
             user_id: ObjectId::parse_str(user_id).unwrap(),
             email: email.to_string(),
-            exp: chrono::Utc::now().timestamp() + (7 * 24 * 60 * 60),
+            exp: chrono::Utc::now().timestamp() + crate::REFRESH_TOKEN_TTL,
         };
 
         encode(
