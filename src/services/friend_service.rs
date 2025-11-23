@@ -76,10 +76,10 @@ impl FriendService {
     ) -> MongoResult<Vec<PopulatedFriendShip>> {
         let pipeline = vec! [
             doc! { "$match": {
-                "$or": {
-                    "user_a_id": user_id,
-                    "user_b_id": user_id,
-                }
+                "$or": [
+                    { "user_a_id": user_id },
+                    { "user_b_id": user_id },
+                ]
             }},
 
             doc! { "$lookup": {
@@ -100,6 +100,7 @@ impl FriendService {
 
             doc! { "$project": {
                 "_id": 1,
+                "created_at": "$created_at",
                 "user_a": {
                     "_id": "$user_a._id",
                     "fullname": "$user_a.fullname",

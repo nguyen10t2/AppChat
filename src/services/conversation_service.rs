@@ -26,4 +26,20 @@ impl ConversationService {
             .await?;
         Ok(())
     }
+
+    pub async fn create(&self, conversation: &Conversation) -> MongoResult<mongodb::bson::oid::ObjectId> {
+        let insert_result = self.collection().insert_one(conversation).await?;
+        Ok(insert_result
+            .inserted_id
+            .as_object_id()
+            .expect("Failed to get inserted_id as ObjectId"))
+    }
+
+    pub async fn find_conversation_by_id(&self, conversation_id: &mongodb::bson::oid::ObjectId) -> MongoResult<Option<Conversation>> {
+        self.collection()
+            .find_one(
+                mongodb::bson::doc! { "_id": conversation_id },
+            )
+            .await
+    }
 }

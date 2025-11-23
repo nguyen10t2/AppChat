@@ -3,7 +3,7 @@ use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use dotenvy::dotenv;
 use std::env;
 
-use crate::routes::{auth_route, friend_routes, user_route};
+use crate::routes::{auth_route, friend_routes, message_routes, user_route};
 
 use crate::services::auth_service::AuthService;
 use crate::services::friend_request_service::FriendRequestService;
@@ -86,6 +86,7 @@ async fn main() -> std::io::Result<()> {
             .configure(auth_route::config)
             .configure(user_route::config)
             .configure(friend_routes::config)
+            .configure(message_routes::config)
             .service(hello)
     })
     .bind(format!("{}:{}", ip_address, port))?

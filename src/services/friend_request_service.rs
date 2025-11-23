@@ -15,7 +15,7 @@ impl FriendRequestService {
 
     pub async fn init_indexes(&self) -> MongoResult<()> {
         let index_friend_model = mongodb::IndexModel::builder()
-            .keys(mongodb::bson::doc! { "from": 1, "to_user": 1 })
+            .keys(mongodb::bson::doc! { "from": 1, "to": 1 })
             .options(
                 mongodb::options::IndexOptions::builder()
                     .unique(true)
@@ -68,11 +68,21 @@ impl FriendRequestService {
         Ok(())
     }
 
-    pub async fn find_by_id(&self, request_id: &ObjectId) -> MongoResult<Option<FriendRequest>> {
+    pub async fn find_by_id_from_request(&self, request_id: &ObjectId) -> MongoResult<Option<FriendRequest>> {
         self.collection()
             .find_one(
                 mongodb::bson::doc! {
-                    "_id": request_id,
+                    "from": request_id,
+                }
+            )
+            .await
+    }
+
+    pub async fn find_by_id_to_request(&self, request_id: &ObjectId) -> MongoResult<Option<FriendRequest>> {
+        self.collection()
+            .find_one(
+                mongodb::bson::doc! {
+                    "to": request_id,
                 }
             )
             .await
@@ -82,7 +92,7 @@ impl FriendRequestService {
         self.collection()
             .delete_one(
                 mongodb::bson::doc! {
-                    "_id": request_id,
+                    "from": request_id,
                 }
             )
             .await?;

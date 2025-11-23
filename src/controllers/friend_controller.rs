@@ -2,9 +2,8 @@ use actix_web::{HttpMessage, HttpRequest, HttpResponse, web};
 use mongodb::bson::oid::ObjectId;
 use serde_json::json;
 
-use crate::models::friend_model::Friend;
+use crate::models::friend_model::{Friend, FriendPreview};
 use crate::models::friend_request_model::FriendRequest;
-use crate::models::user_model::UserPreview;
 use crate::services::friend_request_service::FriendRequestService;
 use crate::services::friend_service::FriendService;
 use crate::services::user_service::UserService;
@@ -13,11 +12,6 @@ use crate::services::user_service::UserService;
 pub struct FriendRequestParams {
     pub to_user_id: ObjectId,
     pub message: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-pub struct FriendRequestActionParams {
-    pub request_id: ObjectId,
 }
 
 pub async fn send_friend_request(
@@ -111,7 +105,8 @@ pub async fn accept_friend_request(
     };
 
     let user_id = &claims.user_id;
-    let request = match friend_request_service.find_by_id(&request_id).await {
+    println!("User ID: {}", user_id);
+    let request = match friend_request_service.find_by_id_from_request(&request_id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             return HttpResponse::NotFound()
@@ -186,7 +181,7 @@ pub async fn decline_friend_request(
 
     let user_id = &claims.user_id;
     
-    let request = match friend_request_service.find_by_id(&request_id).await {
+    let request = match friend_request_service.find_by_id_from_request(&request_id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             return HttpResponse::NotFound()
@@ -234,7 +229,7 @@ pub async fn list_friends(
         }
     };
     
-    let friends: Vec<UserPreview> = friendships.into_iter().map(|f| {
+    let friends: Vec<FriendPreview> = friendships.into_iter().map(|f| {
         if &f.user_a.id == user_id {
             f.user_b
         } else {
@@ -245,8 +240,43 @@ pub async fn list_friends(
     HttpResponse::Ok().json(json!({"friends": friends}))
 }
 
+pub async fn list_friend_requests(
+    friend_request_service: web::Data<FriendRequestService>,
+    req: HttpRequest
+) -> HttpResponse {
+    let extensions = req.extensions();
+    let claims = match extensions.get::<crate::services::auth_service::Claims>() {
+        Some(c) => c,
+        None => {
+            return HttpResponse::Unauthorized().json(json!({
+                "error": "Không tìm thấy thông tin người dùng",
+            }));
+        }
+    };
+    let user_id = &claims.user_id;
+    let (sent, received) = tokio::join!(
+        friend_request_service.find_by_id_from_request(&user_id),
+        friend_request_service.find_by_id_to_request(&user_id),
+    );
 
+    let send_requests = match sent {
+        Ok(reqs) => reqs,
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": format!("Lỗi khi lấy danh sách lời mời kết bạn đã gửi: {}", e)}));
+        }
+    };
 
-pub async fn list_friend_requests() -> HttpResponse {
-    HttpResponse::Ok().json(json!({"status": "not_implemented"}))
+    let received_requests = match received {
+        Ok(reqs) => reqs,
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .json(json!({"error": format!("Lỗi khi lấy danh sách lời mời kết bạn đã nhận: {}", e)}));
+        }
+    };
+
+    HttpResponse::Ok().json(json!({
+        "sent_requests": send_requests,
+        "received_requests": received_requests,
+    }))
 }

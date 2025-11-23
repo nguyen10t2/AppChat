@@ -44,6 +44,36 @@ pub struct Conversation {
     pub last_message: Option<LastMessage>,
     #[serde(default)]
     pub unread_counts: HashMap<String, i32>,
-    pub created_at: BsonDateTime,
-    pub updated_at: BsonDateTime,
+    pub created_at: Option<BsonDateTime>,
+    pub updated_at: Option<BsonDateTime>,
+}
+
+impl Conversation {
+    pub fn new(
+        _type: ConversationType,
+        sender_id: ObjectId,
+        recipient_id: ObjectId,
+    ) -> Self {
+        Conversation {
+            id: None,
+            _type,
+            participant_ids: vec![
+                Participant {
+                    user_id: sender_id,
+                    joined_at: BsonDateTime::now(),
+                },
+                Participant {
+                    user_id: recipient_id,
+                    joined_at: BsonDateTime::now(),
+                },
+            ],
+            group: None,
+            last_message_at: BsonDateTime::now().into(),
+            seen_by: None,
+            last_message: None,
+            unread_counts: HashMap::new(),
+            created_at: BsonDateTime::now().into(),
+            updated_at: BsonDateTime::now().into(),
+        }
+    }
 }

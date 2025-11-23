@@ -11,7 +11,6 @@ pub struct Friend {
     pub user_a_id: ObjectId,
     pub user_b_id: ObjectId,
     pub created_at: BsonDateTime,
-    pub updated_at: BsonDateTime,
 }
 
 
@@ -19,10 +18,17 @@ pub struct Friend {
 pub struct PopulatedFriendShip{
     #[serde(rename = "_id")]
     pub id: ObjectId,
-    pub user_a: UserPreview,
-    pub user_b: UserPreview,
+    pub user_a: FriendPreview,
+    pub user_b: FriendPreview,
     pub created_at: BsonDateTime,
-    pub updated_at: BsonDateTime,
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FriendPreview {
+    #[serde(rename = "_id")]
+    pub id: ObjectId,
+    pub fullname: Option<String>,
 }
 
 impl Friend {
@@ -38,7 +44,6 @@ impl Friend {
             user_a_id: a,
             user_b_id: b,
             created_at: now,
-            updated_at: now,
         }
     }
 }

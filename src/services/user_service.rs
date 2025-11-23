@@ -1,10 +1,8 @@
 use crate::libs::hash::hash_password;
 use crate::models::user_model::{User, UserPreview};
 use chrono::Utc;
-use futures::stream::TryStreamExt;
-use mongodb::bson::from_document;
 use mongodb::bson::oid::ObjectId as Oid;
-use mongodb::bson::{DateTime as BsonDateTime, doc, Document};
+use mongodb::bson::{DateTime as BsonDateTime, doc};
 use mongodb::error::Result as MongoResult;
 use mongodb::{Collection, Database};
 
