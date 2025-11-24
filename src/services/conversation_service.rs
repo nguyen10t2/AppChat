@@ -1,5 +1,5 @@
-use mongodb::Database;
-use crate::models::conversation_model::Conversation;
+use mongodb::{Database, bson::{doc, oid::ObjectId}};
+use crate::models::conversation_model::{Conversation, ConversationType};
 use mongodb::error::Result as MongoResult;
 
 pub struct ConversationService {
@@ -28,11 +28,12 @@ impl ConversationService {
     }
 
     pub async fn create(&self, conversation: &Conversation) -> MongoResult<mongodb::bson::oid::ObjectId> {
-        let insert_result = self.collection().insert_one(conversation).await?;
-        Ok(insert_result
+        let result = self.collection().insert_one(conversation).await?;
+        Ok(result
             .inserted_id
             .as_object_id()
-            .expect("Failed to get inserted_id as ObjectId"))
+            .expect("Failed to get inserted_id as ObjectId")
+            .to_owned())
     }
 
     pub async fn find_conversation_by_id(&self, conversation_id: &mongodb::bson::oid::ObjectId) -> MongoResult<Option<Conversation>> {
@@ -41,5 +42,29 @@ impl ConversationService {
                 mongodb::bson::doc! { "_id": conversation_id },
             )
             .await
+    }
+
+    pub async fn update(&self, conversation: &Conversation) -> MongoResult<()> {
+        self.collection()
+            .replace_one(
+                mongodb::bson::doc! { "_id": &conversation.id },
+                conversation,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn find_with_participant(
+        &self,
+        user_id: &ObjectId,
+        participant_id: &ObjectId,
+    ) -> MongoResult<Option<Conversation>> {
+        let fillter = doc! {
+            "_type": ConversationType::Direct,
+            "participant_ids.user_id": {
+                "$all": [user_id, participant_id]
+            }
+        };
+        self.collection().find_one(fillter).await
     }
 }

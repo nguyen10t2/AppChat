@@ -3,11 +3,13 @@ use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use dotenvy::dotenv;
 use std::env;
 
-use crate::routes::{auth_route, friend_routes, message_routes, user_route};
+use crate::routes::{auth_routes, conversation_routes, friend_routes, message_routes, user_routes};
 
 use crate::services::auth_service::AuthService;
+use crate::services::conversation_service::ConversationService;
 use crate::services::friend_request_service::FriendRequestService;
 use crate::services::friend_service::FriendService;
+use crate::services::message_service::MessageService;
 use crate::services::otp_service::OtpService;
 use crate::services::reset_token_service::ResetTokenService;
 use crate::services::session_service::SessionService;
@@ -20,6 +22,7 @@ mod models;
 mod routes;
 mod services;
 mod validations;
+mod helpers;
 
 #[get("/")]
 async fn hello() -> impl Responder {
@@ -52,6 +55,8 @@ async fn main() -> std::io::Result<()> {
     let reset_token_service = web::Data::new(ResetTokenService {db: _db.clone()});
     let friend_service = web::Data::new(FriendService { db: _db.clone() });
     let friend_request_service = web::Data::new(FriendRequestService { db: _db.clone() });
+    let conversation_service = web::Data::new(ConversationService { db: _db.clone() });
+    let message_service = web::Data::new(MessageService { db: _db.clone() });
 
     user_service
         .init_indexes()
@@ -65,6 +70,26 @@ async fn main() -> std::io::Result<()> {
         .init_indexes()
         .await
         .expect("Lỗi khi đánh index trong otps");
+    reset_token_service
+        .init_indexes()
+        .await
+        .expect("Lỗi khi đánh index trong reset_tokens");
+    friend_service
+        .init_indexes()
+        .await
+        .expect("Lỗi khi đánh index trong friends");
+    friend_request_service
+        .init_indexes()
+        .await
+        .expect("Lỗi khi đánh index trong friend_requests");
+    conversation_service
+        .init_indexes()
+        .await
+        .expect("Lỗi khi đánh index trong conversations");
+    message_service
+        .init_indexes()
+        .await
+        .expect("Lỗi khi đánh index trong messages");
 
     println!("Máy chủ đang chạy tại http://{}:{}", ip_address, port);
 
@@ -83,10 +108,13 @@ async fn main() -> std::io::Result<()> {
             .app_data(reset_token_service.clone())
             .app_data(friend_service.clone())
             .app_data(friend_request_service.clone())
-            .configure(auth_route::config)
-            .configure(user_route::config)
+            .app_data(conversation_service.clone())
+            .app_data(message_service.clone())
+            .configure(auth_routes::config)
+            .configure(user_routes::config)
             .configure(friend_routes::config)
             .configure(message_routes::config)
+            .configure(conversation_routes::config)
             .service(hello)
     })
     .bind(format!("{}:{}", ip_address, port))?

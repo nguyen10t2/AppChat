@@ -25,4 +25,13 @@ impl MessageService {
             .await?;
         Ok(())
     }
+
+    pub async fn create(&self, message: &Message) -> MongoResult<mongodb::bson::oid::ObjectId> {
+        let insert_result = self.collection().insert_one(message).await?;
+        Ok(insert_result
+            .inserted_id
+            .as_object_id()
+            .expect("Failed to get inserted_id as ObjectId"))
+    }
+
 }

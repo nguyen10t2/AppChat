@@ -4,7 +4,7 @@ use jsonwebtoken::{
 use mongodb::bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub user_id: ObjectId,
     pub email: String,

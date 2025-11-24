@@ -17,7 +17,7 @@ impl FriendRequest {
     pub fn new(from: ObjectId, to: ObjectId, message: Option<String>) -> Self {
         let now = BsonDateTime::now();
         FriendRequest {
-            id: None,
+            id: Some(ObjectId::new()),
             from,
             to,
             message,

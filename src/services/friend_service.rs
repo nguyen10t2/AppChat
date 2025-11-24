@@ -51,25 +51,6 @@ impl FriendService {
         Ok(())
     }
 
-    pub async fn find_friends_of_user(&self, user_id: &ObjectId) -> MongoResult<Vec<Friend>> {
-        let mut cursor = self.collection()
-            .find(
-                mongodb::bson::doc! {
-                    "$or": [
-                        { "user_a_id": user_id },
-                        { "user_b_id": user_id },
-                    ]
-                }
-            )
-            .await?;
-
-        let mut friends = Vec::new();
-        while let Some(friend) = cursor.try_next().await? {
-            friends.push(friend);
-        }
-        Ok(friends)
-    }
-
     pub async fn get_friendships(
         &self,
         user_id: &ObjectId,

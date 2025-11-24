@@ -24,9 +24,8 @@ pub async fn send_friend_request(
     let to_user_id = &params.to_user_id;
     let message = &params.message;
 
-    let extensions = req.extensions();
-    let claims = match extensions.get::<crate::services::auth_service::Claims>() {
-        Some(c) => c,
+    let claims = match req.extensions().get::<crate::services::auth_service::Claims>() {
+        Some(c) => c.clone(),
         None => {
             return HttpResponse::Unauthorized().json(json!({
                 "error": "Không tìm thấy thông tin người dùng",
@@ -94,9 +93,9 @@ pub async fn accept_friend_request(
                 .json(json!({"message": "ID yêu cầu kết bạn không hợp lệ"}));
         }
     };
-    let extensions = req.extensions();
-    let claims = match extensions.get::<crate::services::auth_service::Claims>() {
-        Some(c) => c,
+
+    let claims = match req.extensions().get::<crate::services::auth_service::Claims>() {
+        Some(c) => c.clone(),
         None => {
             return HttpResponse::Unauthorized().json(json!({
                 "error": "Không tìm thấy thông tin người dùng",
@@ -169,9 +168,9 @@ pub async fn decline_friend_request(
                 .json(json!({"message": "ID yêu cầu kết bạn không hợp lệ"}));
         }
     };
-    let extensions = req.extensions();
-    let claims = match extensions.get::<crate::services::auth_service::Claims>() {
-        Some(c) => c,
+
+    let claims = match req.extensions().get::<crate::services::auth_service::Claims>() {
+        Some(c) => c.clone(),
         None => {
             return HttpResponse::Unauthorized().json(json!({
                 "error": "Không tìm thấy thông tin người dùng",
@@ -211,9 +210,8 @@ pub async fn list_friends(
     friend_service: web::Data<FriendService>,
     req: HttpRequest
 ) -> HttpResponse {
-    let extensions = req.extensions();
-    let claims = match extensions.get::<crate::services::auth_service::Claims>() {
-        Some(c) => c,
+    let claims = match req.extensions().get::<crate::services::auth_service::Claims>() {
+        Some(c) => c.clone(),
         None => {
             return HttpResponse::Unauthorized().json(json!({
                 "error": "Không tìm thấy thông tin người dùng",
@@ -221,6 +219,7 @@ pub async fn list_friends(
         }
     };
     let user_id = &claims.user_id;
+
     let friendships = match friend_service.get_friendships(user_id).await {
         Ok(fs) => fs,
         Err(e) => {
@@ -244,9 +243,8 @@ pub async fn list_friend_requests(
     friend_request_service: web::Data<FriendRequestService>,
     req: HttpRequest
 ) -> HttpResponse {
-    let extensions = req.extensions();
-    let claims = match extensions.get::<crate::services::auth_service::Claims>() {
-        Some(c) => c,
+    let claims = match req.extensions().get::<crate::services::auth_service::Claims>() {
+        Some(c) => c.clone(),
         None => {
             return HttpResponse::Unauthorized().json(json!({
                 "error": "Không tìm thấy thông tin người dùng",
@@ -254,6 +252,7 @@ pub async fn list_friend_requests(
         }
     };
     let user_id = &claims.user_id;
+    
     let (sent, received) = tokio::join!(
         friend_request_service.find_by_id_from_request(&user_id),
         friend_request_service.find_by_id_to_request(&user_id),

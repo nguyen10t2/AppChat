@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 use mongodb::bson::oid::ObjectId;
 use mongodb::bson::DateTime as BsonDateTime;
 
-use crate::models::user_model::UserPreview;
-
 #[derive(Serialize, Deserialize)]
 pub struct Friend {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
