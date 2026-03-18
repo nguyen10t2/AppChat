@@ -29,6 +29,16 @@ pub async fn connect_database() -> Result<PgPool, error::SystemError> {
         .acquire_slow_threshold(std::time::Duration::from_secs(3))
         .connect(database_url)
         .await?;
+
+    tracing::info!("Đang chạy Database Migrations...");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Lỗi chạy migrations: {}", e);
+            error::SystemError::internal_error("Lỗi khởi tạo Database schema")
+        })?;
+
     Ok(pool)
 }
 
