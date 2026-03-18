@@ -1,0 +1,179 @@
+use actix_cors::Cors;
+use actix_files::Files;
+use actix_web::{
+    self, App, HttpServer,
+    middleware::{Logger, from_fn},
+    web,
+};
+use std::sync::{Arc, LazyLock};
+
+use crate::{
+    configs::{RedisCache, connect_database},
+    middlewares::{authentication, authorization},
+    modules::{
+        conversation::{
+            repository_pg::{
+                ConversationPgRepository, LastMessagePgRepository, ParticipantPgRepository,
+            },
+            service::ConversationService,
+        },
+        file_upload::{repository_pg::FilePgRepository, service::FileUploadService},
+        friend::{repository_pg::FriendRepositoryPg, service::FriendService},
+        message::{repository_pg::MessageRepositoryPg, service::MessageService},
+        user::{repository_pg::UserRepositoryPg, schema::UserRole, service::UserService},
+        websocket::{
+            handler::websocket_handler, presence::PresenceService, server::WebSocketServer,
+        },
+    },
+};
+
+mod api;
+mod configs;
+mod constants;
+mod middlewares;
+pub mod modules;
+mod observability;
+mod utils;
+
+#[cfg(test)]
+mod tests;
+
+pub static ENV: LazyLock<constants::Env> = LazyLock::new(|| {
+    dotenvy::dotenv().ok();
+
+    // Setup tracing subscriber cho logging
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_thread_ids(true)
+        .init();
+
+    tracing::info!("Tracing initialized");
+    tracing::info!("Environment variables loaded from .env file");
+
+    constants::Env::default()
+});
+
+pub static METRICS: LazyLock<observability::AppMetrics> =
+    LazyLock::new(observability::AppMetrics::default);
+
+#[actix_web::get("/")]
+async fn health_check(_db_pool: web::Data<sqlx::PgPool>) -> &'static str {
+    "Server is running"
+}
+
+#[actix_web::get("/metrics")]
+async fn metrics() -> actix_web::HttpResponse {
+    actix_web::HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4; charset=utf-8")
+        .body(METRICS.prometheus_text())
+}
+
+#[actix_web::get("/metrics/json")]
+async fn metrics_json() -> actix_web::HttpResponse {
+    actix_web::HttpResponse::Ok().json(METRICS.snapshot())
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let db_pool = connect_database().await.map_err(|_| {
+        eprintln!("Database connection error");
+        std::io::Error::other("Database connection error")
+    })?;
+    println!("Database connection successful");
+
+    let redis_pool = RedisCache::new().await.map_err(|_| {
+        eprintln!("Redis connection error");
+        std::io::Error::other("Redis connection error")
+    })?;
+    println!("Redis connection successful");
+
+    let user_repo = UserRepositoryPg::new(db_pool.clone());
+    let friend_repo = FriendRepositoryPg::new(db_pool.clone());
+    let presence_service = PresenceService::new(redis_pool.get_pool().clone());
+    let participant_repo = ParticipantPgRepository::default();
+    let message_repo = MessageRepositoryPg::new(db_pool.clone());
+    let conversation_repo =
+        ConversationPgRepository::new(db_pool.clone(), participant_repo.clone());
+    let last_message_repo = LastMessagePgRepository::default();
+    let file_repo = FilePgRepository::new(db_pool.clone());
+    let ws_server = Arc::new(WebSocketServer::new());
+    let user_service =
+        UserService::with_dependencies(Arc::new(user_repo.clone()), Arc::new(redis_pool.clone()));
+    let friend_service = FriendService::with_dependencies(
+        Arc::new(friend_repo.clone()),
+        Arc::new(user_repo.clone()),
+    );
+    let file_upload_service = FileUploadService::with_defaults(Arc::new(file_repo));
+    let conversation_service = ConversationService::with_dependencies(
+        Arc::new(conversation_repo.clone()),
+        Arc::new(participant_repo.clone()),
+        Arc::new(message_repo.clone()),
+        ws_server.clone(),
+    );
+    let message_service = MessageService::with_dependencies(
+        Arc::new(conversation_repo.clone()),
+        Arc::new(message_repo),
+        Arc::new(participant_repo),
+        Arc::new(last_message_repo),
+        Arc::new(redis_pool),
+        ws_server.clone(),
+    );
+
+    tracing::info!(
+        "Starting HTTP server at http://{}:{}",
+        ENV.ip.as_str(),
+        ENV.port
+    );
+
+    HttpServer::new(move || {
+        let cors = Cors::default()
+            .allowed_origin(&ENV.frontend_url)
+            .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+            .allowed_headers(vec!["Authorization", "Content-Type", "Accept"])
+            .supports_credentials()
+            .max_age(3600);
+
+        App::new()
+            .wrap(cors)
+            .wrap(Logger::default())
+            .wrap(from_fn(middlewares::request_context))
+            .app_data(web::Data::new(user_service.clone()))
+            .app_data(web::Data::new(friend_service.clone()))
+            .app_data(web::Data::new(file_upload_service.clone()))
+            .app_data(web::Data::new(db_pool.clone()))
+            .app_data(web::Data::new(conversation_service.clone()))
+            .app_data(web::Data::new(message_service.clone()))
+            .app_data(web::Data::new(ws_server.clone())) // WebSocket server
+            .app_data(web::Data::new(presence_service.clone())) // Presence service
+            .app_data(web::Data::new(friend_repo.clone())) // Friend repo for WS presence
+            .service(health_check)
+            .service(metrics)
+            .service(metrics_json)
+            .service(Files::new("/uploads", "./uploads").prefer_utf8(true))
+            // WebSocket endpoint (không cần authentication - auth trong WS handshake)
+            .route("/ws", web::get().to(websocket_handler))
+            .service(
+                web::scope("/api")
+                    .default_service(
+                        web::route()
+                            .guard(actix_web::guard::Method(actix_web::http::Method::OPTIONS))
+                            .to(|| async { actix_web::HttpResponse::Ok().finish() }),
+                    )
+                    .configure(modules::user::route::public_api_configure)
+                    .service(
+                        web::scope("")
+                            .wrap(from_fn(authorization(vec![UserRole::User])))
+                            .wrap(from_fn(authentication))
+                            .configure(modules::user::route::configure)
+                            .configure(modules::friend::route::configure)
+                            .configure(modules::conversation::route::configure)
+                            .configure(modules::message::route::configure)
+                            .configure(modules::file_upload::route::configure::<FilePgRepository>),
+                    ),
+            )
+    })
+    .bind((ENV.ip.as_str(), ENV.port))?
+    .workers(2)
+    .run()
+    .await
+}

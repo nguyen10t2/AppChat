@@ -1,0 +1,169 @@
+use actix_web::{FromRequest, web};
+use argon2::{
+    Argon2, PasswordVerifier,
+    password_hash::{Error as PasswordHashError, PasswordHash, PasswordHasher, SaltString},
+};
+use futures_util::future::LocalBoxFuture;
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize, de::Deserializer};
+use validator::Validate;
+
+use std::sync::LazyLock;
+
+use crate::{api::error, modules::user::schema::UserRole};
+
+static ARGON2: LazyLock<Argon2<'static>> = LazyLock::new(Argon2::default);
+
+pub async fn hash_password(password: String) -> Result<String, error::SystemError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rayon::spawn(move || {
+        let salt = SaltString::generate(&mut OsRng);
+        let result = ARGON2
+            .hash_password(password.as_bytes(), &salt)
+            .map(|hash| hash.to_string())
+            .map_err(error::SystemError::HashError);
+        let _ = tx.send(result);
+    });
+
+    let hash = rx
+        .await
+        .map_err(|_| error::SystemError::internal_error("Lỗi tạo mật khẩu"))??;
+    Ok(hash)
+}
+
+pub async fn verify_password(hash: String, password: String) -> Result<bool, error::SystemError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rayon::spawn(move || {
+        let parsed_hash_res = PasswordHash::new(&hash);
+        let res = match parsed_hash_res {
+            Ok(parsed_hash) => match ARGON2.verify_password(password.as_bytes(), &parsed_hash) {
+                Ok(_) => Ok(true),
+                Err(PasswordHashError::Password) => Ok(false),
+                Err(e) => Err(error::SystemError::HashError(e)),
+            },
+            Err(e) => Err(error::SystemError::HashError(e)),
+        };
+        let _ = tx.send(res);
+    });
+
+    rx.await
+        .map_err(|_| error::SystemError::internal_error("Lỗi xác thực mật khẩu"))?
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TypeClaims {
+    RefreshToken,
+    AccessToken,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: uuid::Uuid,
+    pub iat: u64,
+    pub exp: u64,
+    pub jti: Option<uuid::Uuid>,
+    pub role: UserRole,
+    pub _type: Option<TypeClaims>,
+}
+
+impl Claims {
+    pub fn new(sub: &uuid::Uuid, role: &UserRole, exp: u64) -> Self {
+        let now = chrono::Utc::now().timestamp() as u64;
+        Claims {
+            sub: *sub,
+            iat: now,
+            exp: now + exp,
+            role: role.clone(),
+            jti: None,
+            _type: None,
+        }
+    }
+
+    pub fn with_jti(mut self, jti: uuid::Uuid) -> Self {
+        self.jti = Some(jti);
+        self
+    }
+
+    pub fn with_type(mut self, _type: TypeClaims) -> Self {
+        self._type = Some(_type);
+        self
+    }
+
+    pub fn encode(&self, secret: &[u8]) -> Result<String, error::SystemError> {
+        let header = Header::new(Algorithm::HS256);
+        let token = encode(&header, self, &EncodingKey::from_secret(secret))?;
+        Ok(token)
+    }
+
+    #[allow(unused)]
+    pub fn decode(token: &str, secret: &[u8]) -> Result<Self, error::SystemError> {
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.validate_exp = true;
+        validation.validate_nbf = false;
+        let token_data = decode::<Self>(token, &DecodingKey::from_secret(secret), &validation)?;
+        Ok(token_data.claims)
+    }
+}
+
+pub fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+pub struct ValidatedJson<T>(pub T);
+
+impl<T> FromRequest for ValidatedJson<T>
+where
+    T: Validate + serde::de::DeserializeOwned + 'static,
+{
+    type Error = error::Error;
+    type Future = LocalBoxFuture<'static, Result<Self, Self::Error>>;
+
+    fn from_request(
+        req: &actix_web::HttpRequest,
+        payload: &mut actix_web::dev::Payload,
+    ) -> Self::Future {
+        let fut = web::Json::<T>::from_request(req, payload);
+
+        Box::pin(async move {
+            let json = fut
+                .await
+                .map_err(|e| error::Error::BadRequest(e.to_string().into()))?;
+            let model = json.into_inner();
+            model
+                .validate()
+                .map_err(|e| error::Error::BadRequest(e.to_string().into()))?;
+            Ok(ValidatedJson(model))
+        })
+    }
+}
+
+pub struct ValidatedQuery<T>(pub T);
+
+impl<T> FromRequest for ValidatedQuery<T>
+where
+    T: Validate + serde::de::DeserializeOwned + 'static,
+{
+    type Error = error::Error;
+    type Future = LocalBoxFuture<'static, Result<Self, Self::Error>>;
+
+    fn from_request(
+        req: &actix_web::HttpRequest,
+        payload: &mut actix_web::dev::Payload,
+    ) -> Self::Future {
+        let fut = web::Query::<T>::from_request(req, payload);
+
+        Box::pin(async move {
+            let query = fut
+                .await
+                .map_err(|e| error::Error::BadRequest(e.to_string().into()))?;
+            query
+                .validate()
+                .map_err(|e| error::Error::BadRequest(e.to_string().into()))?;
+            Ok(ValidatedQuery(query.into_inner()))
+        })
+    }
+}
