@@ -46,6 +46,7 @@ services:
       # Ghi đè lại URL để trỏ vào IP nội bộ của container DB và Redis vừa tạo
       - DATABASE_URL=postgres://${POSTGRES_USER:-appchat}:${POSTGRES_PASSWORD:-secretpassword}@db:5432/${POSTGRES_DB:-appchat}
       - REDIS_URL=redis://redis:6379
+      - IP=0.0.0.0 # Bắt buộc phải là 0.0.0.0 để expose port ra ngoài host!!
     extra_hosts:
       - "host.docker.internal:host-gateway" # Cú pháp mapping host trên Linux
 
