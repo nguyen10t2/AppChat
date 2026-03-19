@@ -3,6 +3,7 @@ import { wsClient } from '@/lib/ws'
 import { conversationService } from '@/services/conversation.service'
 import { messageService } from '@/services/message.service'
 import type { Conversation, Message } from '@/types/chat'
+import { useAuthStore } from '@/stores/auth.store'
 
 type ChatState = {
   conversations: Conversation[]
@@ -23,6 +24,17 @@ type ChatState = {
   updateTyping: (conversationId: string, userId: string, isTyping: boolean) => void
   editMessageRealtime: (conversationId: string, messageId: string, newContent: string) => void
   deleteMessageRealtime: (conversationId: string, messageId: string) => void
+  setActiveConversationId: (id: string | null) => void
+  updateConversation: (conversationId: string, partial: Partial<Conversation>) => void
+  updateConversationLastMessage: (payload: {
+    conversationId: string
+    message: Message
+    unreadCounts?: Record<string, number>
+  }) => void
+  addConversation: (conversation: Conversation) => void
+  addParticipant: (conversationId: string, participant: Conversation['participants'][number]) => void
+  removeParticipant: (conversationId: string, userId: string) => void
+  removeConversation: (conversationId: string) => void
 }
 
 function sortByRecent(a: Conversation, b: Conversation) {
@@ -35,6 +47,12 @@ function findDirectRecipient(conversation: Conversation, myUserId: string): stri
   if (conversation._type !== 'direct') return null
   const recipient = conversation.participants.find((item) => item.user_id !== myUserId)
   return recipient?.user_id ?? null
+}
+
+function sortAndReplace(conversations: Conversation[], updated: Conversation): Conversation[] {
+  return conversations
+    .map((item) => (item.conversation_id === updated.conversation_id ? updated : item))
+    .sort(sortByRecent)
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -174,7 +192,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   markAsSeen: async (conversationId) => {
     await conversationService.markAsSeen(conversationId)
-    await get().loadConversations()
+    const myUserId = useAuthStore.getState().user?.id
+    if (!myUserId) return
+
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.conversation_id !== conversationId
+          ? conversation
+          : {
+              ...conversation,
+              participants: conversation.participants.map((participant) =>
+                participant.user_id === myUserId
+                  ? { ...participant, unread_count: 0 }
+                  : participant,
+              ),
+            },
+      ),
+    }))
   },
 
   receiveMessage: (message) => {
@@ -248,5 +282,106 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
       }
     })
+  },
+
+  setActiveConversationId: (id) => set({ activeConversationId: id }),
+
+  updateConversation: (conversationId, partial) => {
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.conversation_id === conversationId
+          ? { ...conversation, ...partial }
+          : conversation,
+      ),
+    }))
+  },
+
+  updateConversationLastMessage: ({ conversationId, message, unreadCounts }) => {
+    set((state) => {
+      const updated = state.conversations.find(
+        (item) => item.conversation_id === conversationId,
+      )
+      if (!updated) return state
+
+      const nextConversation: Conversation = {
+        ...updated,
+        last_message: {
+          content: message.content,
+          sender_id: message.sender_id,
+          created_at: message.created_at,
+        },
+        updated_at: message.created_at,
+        participants: updated.participants.map((participant) => {
+          const unread = unreadCounts?.[participant.user_id]
+          return unread === undefined
+            ? participant
+            : { ...participant, unread_count: unread }
+        }),
+      }
+
+      return {
+        conversations: sortAndReplace(state.conversations, nextConversation),
+      }
+    })
+  },
+
+  addConversation: (conversation) => {
+    set((state) => {
+      if (state.conversations.some((item) => item.conversation_id === conversation.conversation_id)) {
+        return {
+          conversations: sortAndReplace(state.conversations, conversation),
+        }
+      }
+
+      return {
+        conversations: [...state.conversations, conversation].sort(sortByRecent),
+      }
+    })
+  },
+
+  addParticipant: (conversationId, participant) => {
+    set((state) => ({
+      conversations: state.conversations.map((conversation) => {
+        if (conversation.conversation_id !== conversationId) return conversation
+        if (conversation.participants.some((item) => item.user_id === participant.user_id)) {
+          return conversation
+        }
+
+        return {
+          ...conversation,
+          participants: [...conversation.participants, participant],
+        }
+      }),
+    }))
+  },
+
+  removeParticipant: (conversationId, userId) => {
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation.conversation_id !== conversationId
+          ? conversation
+          : {
+              ...conversation,
+              participants: conversation.participants.filter(
+                (participant) => participant.user_id !== userId,
+              ),
+            },
+      ),
+    }))
+  },
+
+  removeConversation: (conversationId) => {
+    set((state) => ({
+      conversations: state.conversations.filter(
+        (conversation) => conversation.conversation_id !== conversationId,
+      ),
+      activeConversationId:
+        state.activeConversationId === conversationId ? null : state.activeConversationId,
+      messagesByConversation: Object.fromEntries(
+        Object.entries(state.messagesByConversation).filter(
+          ([key]) => key !== conversationId,
+        ),
+      ),
+    }))
   },
 }))

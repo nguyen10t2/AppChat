@@ -415,7 +415,132 @@ impl ConversationRepository for ConversationPgRepository {
 
         Ok(())
     }
+
+    async fn update_group_info<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        name: Option<&str>,
+        avatar_url: Option<Option<&str>>,
+        tx: E,
+    ) -> Result<(), error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        // Build dynamic SET clause only for provided fields
+        let mut parts: Vec<&str> = vec![];
+        if name.is_some() {
+            parts.push("name = $2");
+        }
+        if avatar_url.is_some() {
+            parts.push("avatar_url = $3");
+        }
+        if parts.is_empty() {
+            return Ok(());
+        }
+        let sql = format!(
+            "UPDATE group_conversations SET {} WHERE conversation_id = $1",
+            parts.join(", ")
+        );
+        let mut q = sqlx::query(&sql).bind(conversation_id);
+        if let Some(n) = name {
+            q = q.bind(n);
+        } else {
+            q = q.bind(Option::<String>::None);
+        }
+        if let Some(url) = avatar_url {
+            q = q.bind(url);
+        } else {
+            q = q.bind(Option::<Option<String>>::None);
+        }
+        q.execute(tx).await?;
+        Ok(())
+    }
+
+    async fn get_group_creator<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        tx: E,
+    ) -> Result<Option<Uuid>, error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        let row = sqlx::query_scalar::<_, Uuid>(
+            "SELECT created_by FROM group_conversations WHERE conversation_id = $1",
+        )
+        .bind(conversation_id)
+        .fetch_optional(tx)
+        .await?;
+        Ok(row)
+    }
+
+    async fn add_participant<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        user_id: &Uuid,
+        tx: E,
+    ) -> Result<(), error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        sqlx::query(
+            r#"
+            INSERT INTO participants (conversation_id, user_id, unread_count, joined_at)
+            VALUES ($1, $2, 0, NOW())
+            ON CONFLICT (conversation_id, user_id)
+            DO UPDATE SET deleted_at = NULL, joined_at = NOW(), unread_count = 0
+            "#,
+        )
+        .bind(conversation_id)
+        .bind(user_id)
+        .execute(tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn remove_participant<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        user_id: &Uuid,
+        tx: E,
+    ) -> Result<(), error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        sqlx::query(
+            r#"
+            UPDATE participants
+            SET deleted_at = NOW()
+            WHERE conversation_id = $1 AND user_id = $2 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(conversation_id)
+        .bind(user_id)
+        .execute(tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_group_member_ids<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        tx: E,
+    ) -> Result<Vec<Uuid>, error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        let ids = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT user_id FROM participants
+            WHERE conversation_id = $1 AND deleted_at IS NULL
+            "#,
+        )
+        .bind(conversation_id)
+        .fetch_all(tx)
+        .await?;
+        Ok(ids)
+    }
 }
+
 
 #[derive(Clone, Default)]
 pub struct ParticipantPgRepository {}

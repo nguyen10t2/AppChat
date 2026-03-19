@@ -30,4 +30,19 @@ export const conversationService = {
   async markAsSeen(conversationId: string): Promise<void> {
     await http.post(`/conversations/${conversationId}/mark-as-seen`)
   },
+
+  async updateGroup(
+    conversationId: string,
+    payload: { name?: string; avatar_url?: string | null },
+  ): Promise<void> {
+    await http.patch(`/conversations/${conversationId}/group`, payload)
+  },
+
+  async addMember(conversationId: string, userId: string): Promise<void> {
+    await http.post(`/conversations/${conversationId}/members`, { user_id: userId })
+  },
+
+  async removeMember(conversationId: string, userId: string): Promise<void> {
+    await http.delete(`/conversations/${conversationId}/members/${userId}`)
+  },
 }

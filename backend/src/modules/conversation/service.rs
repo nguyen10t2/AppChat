@@ -372,9 +372,202 @@ where
                 &ServerMessage::read_message(conversation_update, last_message_info),
                 None,
             );
-        } else {
-            tx.commit().await?;
         }
+        Ok(())
+    }
+
+    /// Cập nhật thông tin nhóm (tên, avatar) - Chỉ trưởng nhóm mới có quyền
+    pub async fn update_group_info(
+        &self,
+        conversation_id: Uuid,
+        user_id: Uuid,
+        name: Option<String>,
+        avatar_url: Option<Option<String>>,
+    ) -> Result<(), error::SystemError> {
+        let mut tx = self.conversation_repo.get_pool().begin().await?;
+
+        // 1. Kiểm tra conversation-type và membership
+        let (conv, is_member) = self
+            .conversation_repo
+            .get_conversation_and_check_membership(&conversation_id, &user_id, tx.as_mut())
+            .await?;
+
+        let conv = conv.ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc trò chuyện"))?;
+        if conv._type != ConversationType::Group {
+            return Err(error::SystemError::bad_request("Chỉ có thể cập nhật thông tin cho nhóm"));
+        }
+        if !is_member {
+            return Err(error::SystemError::forbidden("Bạn không phải thành viên của nhóm này"));
+        }
+
+        // 2. Kiểm tra quyền trưởng nhóm (creator)
+        let creator_id = self
+            .conversation_repo
+            .get_group_creator(&conversation_id, tx.as_mut())
+            .await?
+            .ok_or_else(|| error::SystemError::internal_error("Lỗi dữ liệu nhóm: thiếu thông tin người tạo"))?;
+
+        if creator_id != user_id {
+            return Err(error::SystemError::forbidden("Chỉ trưởng nhóm mới có quyền thay đổi thông tin"));
+        }
+
+        // 3. Thực hiện cập nhật
+        self.conversation_repo
+            .update_group_info(
+                &conversation_id,
+                name.as_deref(),
+                avatar_url.as_ref().map(|opt| opt.as_deref()),
+                tx.as_mut(),
+            )
+            .await?;
+
+        self.conversation_repo.update_timestamp(&conversation_id, tx.as_mut()).await?;
+
+        tx.commit().await?;
+
+        // 4. Broadcast WS tới tất cả thành viên trong nhóm
+        self.ws_server.broadcast_to_room(
+            conversation_id,
+            &ServerMessage::GroupUpdated {
+                conversation_id,
+                name,
+                avatar_url,
+            },
+            None,
+        );
+
+        Ok(())
+    }
+
+    /// Thêm thành viên vào nhóm (Chỉ trưởng nhóm mới có quyền)
+    pub async fn add_member(
+        &self,
+        conversation_id: Uuid,
+        requester_id: Uuid,
+        new_user_id: Uuid,
+        is_friend: bool,
+    ) -> Result<(), error::SystemError> {
+        if !is_friend {
+            return Err(error::SystemError::forbidden("Chỉ có thể thêm bạn bè vào nhóm"));
+        }
+
+        let mut tx = self.conversation_repo.get_pool().begin().await?;
+
+        // 1. Kiểm tra quyền trưởng nhóm
+        let creator_id = self
+            .conversation_repo
+            .get_group_creator(&conversation_id, tx.as_mut())
+            .await?
+            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy nhóm hoặc không phải là nhóm"))?;
+
+        if creator_id != requester_id {
+            return Err(error::SystemError::forbidden("Chỉ trưởng nhóm mới có quyền thêm thành viên"));
+        }
+
+        // 2. Thêm thành viên (UPSERT)
+        self.conversation_repo
+            .add_participant(&conversation_id, &new_user_id, tx.as_mut())
+            .await?;
+
+        self.conversation_repo.update_timestamp(&conversation_id, tx.as_mut()).await?;
+
+        // Lấy thông tin user mới để broadcast
+        let user_info = sqlx::query_as::<_, ParticipantRow>(
+            "SELECT display_name, avatar_url FROM users WHERE id = $1"
+        )
+        .bind(new_user_id)
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(|_| error::SystemError::not_found("Không tìm thấy người dùng được thêm"))?;
+
+        tx.commit().await?;
+
+        // 3. Broadcast WS
+        let conversation_detail = self
+            .conversation_repo
+            .find_one_conversation_detail(&conversation_id)
+            .await?;
+
+        if let Some(conversation_detail) = conversation_detail {
+            let conversation_json = serde_json::to_value(&conversation_detail).map_err(|e| {
+                error::SystemError::internal_error(format!(
+                    "Lỗi khi xử lý dữ liệu cuộc trò chuyện: {}",
+                    e
+                ))
+            })?;
+
+            self.ws_server.send_to_users(
+                &[new_user_id],
+                &ServerMessage::NewGroup {
+                    conversation: conversation_json,
+                },
+            );
+        }
+
+        self.ws_server.broadcast_to_room(
+            conversation_id,
+            &ServerMessage::MemberAdded {
+                conversation_id,
+                user_id: new_user_id,
+                display_name: user_info.display_name,
+                avatar_url: user_info.avatar_url,
+            },
+            None,
+        );
+
+        Ok(())
+    }
+
+    /// Xóa thành viên hoặc tự rời nhóm
+    pub async fn remove_member(
+        &self,
+        conversation_id: Uuid,
+        requester_id: Uuid,
+        target_user_id: Uuid,
+    ) -> Result<(), error::SystemError> {
+        let mut tx = self.conversation_repo.get_pool().begin().await?;
+
+        // 1. Kiểm tra conversation-type
+        let conv = self.conversation_repo.find_by_id(&conversation_id, tx.as_mut()).await?
+            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc trò chuyện"))?;
+
+        if conv._type != ConversationType::Group {
+            return Err(error::SystemError::bad_request("Chỉ có thể rời nhóm hoặc xóa thành viên khỏi nhóm"));
+        }
+
+        // 2. Kiểm tra quyền
+        let creator_id = self
+            .conversation_repo
+            .get_group_creator(&conversation_id, tx.as_mut())
+            .await?
+            .ok_or_else(|| error::SystemError::internal_error("Lỗi dữ liệu nhóm"))?;
+
+        if requester_id != target_user_id && requester_id != creator_id {
+            return Err(error::SystemError::forbidden("Bạn không có quyền thực hiện hành động này"));
+        }
+
+        if target_user_id == creator_id {
+            return Err(error::SystemError::bad_request("Không thể xóa trưởng nhóm."));
+        }
+
+        // 3. Soft delete participant
+        self.conversation_repo
+            .remove_participant(&conversation_id, &target_user_id, tx.as_mut())
+            .await?;
+
+        self.conversation_repo.update_timestamp(&conversation_id, tx.as_mut()).await?;
+
+        tx.commit().await?;
+
+        // 4. Broadcast WS
+        self.ws_server.broadcast_to_room(
+            conversation_id,
+            &ServerMessage::MemberRemoved {
+                conversation_id,
+                user_id: target_user_id,
+            },
+            None,
+        );
 
         Ok(())
     }

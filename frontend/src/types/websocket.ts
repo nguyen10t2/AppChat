@@ -1,4 +1,4 @@
-import type { Message } from '@/types/chat'
+import type { Conversation, Message } from '@/types/chat'
 
 export type ClientWsMessage =
   | { type: 'auth'; token: string }
@@ -51,3 +51,18 @@ export type ServerWsMessage =
   | { type: 'user-offline'; user_id: string; last_seen: string | null }
   | { type: 'pong' }
   | { type: 'error'; message: string }
+  | { type: 'new-group'; conversation: Conversation | null }
+  | {
+      type: 'group-updated'
+      conversation_id: string
+      name?: string
+      avatar_url?: string | null
+    }
+  | {
+      type: 'member-added'
+      conversation_id: string
+      user_id: string
+      display_name: string
+      avatar_url: string | null
+    }
+  | { type: 'member-removed'; conversation_id: string; user_id: string }

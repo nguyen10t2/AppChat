@@ -1,5 +1,4 @@
 import { useMemo, useEffect, useRef } from 'react'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { formatTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { Message } from '@/types/chat'
@@ -25,7 +24,7 @@ export function MessagePane({ messages, myUserId, typingUsers, onReply }: Props)
   )
 
   return (
-    <ScrollArea className="h-[60vh] bg-background/50 p-3">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-background/50 p-3">
       <div className="space-y-2 flex flex-col">
         {messages.map((message) => {
           const isMine = message.sender_id === myUserId
@@ -87,6 +86,6 @@ export function MessagePane({ messages, myUserId, typingUsers, onReply }: Props)
         
         <div ref={bottomRef} className="h-1" />
       </div>
-    </ScrollArea>
+    </div>
   )
 }

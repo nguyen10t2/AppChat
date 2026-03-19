@@ -8,6 +8,9 @@ pub fn configure(cfg: &mut ServiceConfig) {
             .service(get_conversations)
             .service(get_messages)
             .service(mark_as_seen)
+            .service(update_group)
+            .service(add_member)
+            .service(remove_member)
             .service(scope("").service(create_conversation)),
     );
 }

@@ -1,10 +1,9 @@
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import type { Conversation } from '@/types/chat'
 import { cn } from '@/lib/utils'
 import { formatTime } from '@/lib/format'
 import { OnlineDot } from '@/components/chat/online-dot'
+import { GroupAvatar } from '@/components/chat/group-avatar'
 
 type Props = {
   conversations: Conversation[]
@@ -31,8 +30,14 @@ function unreadOfMe(conversation: Conversation, myUserId: string) {
 
 export function ConversationList(props: Props) {
   return (
-    <ScrollArea className="h-[72vh]">
-      <div className="space-y-1 pr-2">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="space-y-1 p-2">
+        {props.conversations.length === 0 && (
+          <div className="flex flex-col items-center gap-2 py-12 text-muted-foreground">
+            <span className="text-3xl">💬</span>
+            <p className="text-xs">Chưa có cuộc trò chuyện nào</p>
+          </div>
+        )}
         {props.conversations.map((conversation) => {
           const isActive = props.activeConversationId === conversation.conversation_id
           const title = conversationName(conversation, props.myUserId)
@@ -49,28 +54,38 @@ export function ConversationList(props: Props) {
               key={conversation.conversation_id}
               onClick={() => props.onSelectConversation(conversation.conversation_id)}
               className={cn(
-                'flex w-full items-start gap-3 border px-3 py-2 text-left transition-colors',
+                'flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors',
                 isActive
-                  ? 'border-primary/40 bg-primary/10'
-                  : 'border-transparent hover:border-border/60 hover:bg-muted/60',
+                  ? 'bg-primary/10 text-foreground'
+                  : 'hover:bg-muted/60',
               )}
             >
-              <div className="relative mt-0.5">
-                <Avatar className="h-8 w-8 rounded-none">
-                  <AvatarFallback>{title.charAt(0).toUpperCase()}</AvatarFallback>
-                </Avatar>
+                <GroupAvatar
+                  avatarUrl={
+                    conversation._type === 'group'
+                      ? conversation.group_info?.avatar_url
+                      : counterpart?.avatar_url
+                  }
+                  participants={
+                    conversation._type === 'group'
+                      ? conversation.participants
+                      : counterpart
+                      ? [counterpart]
+                      : []
+                  }
+                  size="md"
+                />
                 {conversation._type === 'direct' ? (
-                  <span className="absolute -right-1 -bottom-1">
+                  <span className="absolute -right-0.5 -bottom-0.5">
                     <OnlineDot online={isOnline} />
                   </span>
                 ) : null}
-              </div>
 
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate text-sm font-medium text-foreground">{title}</p>
                   {conversation.last_message?.created_at ? (
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
                       {formatTime(conversation.last_message.created_at)}
                     </span>
                   ) : null}
@@ -82,7 +97,7 @@ export function ConversationList(props: Props) {
               </div>
 
               {unread > 0 ? (
-                <Badge className="rounded-none" variant="secondary">
+                <Badge className="shrink-0 rounded-full text-[10px] h-5 min-w-5 px-1.5" variant="destructive">
                   {unread}
                 </Badge>
               ) : null}
@@ -90,6 +105,6 @@ export function ConversationList(props: Props) {
           )
         })}
       </div>
-    </ScrollArea>
+    </div>
   )
 }

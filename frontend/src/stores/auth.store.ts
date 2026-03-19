@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { authService } from '@/services/auth.service'
 import { forceRefresh } from '@/lib/http'
+import { userService } from '@/services/user.service'
 import type { AuthUser, SignInPayload, SignUpPayload } from '@/types/auth'
 
 type AuthState = {
@@ -14,6 +15,13 @@ type AuthState = {
   signIn: (payload: SignInPayload) => Promise<void>
   signUp: (payload: SignUpPayload) => Promise<void>
   signOut: () => Promise<void>
+  updateUser: (partial: Partial<AuthUser>) => void
+  updateProfile: (payload: {
+    display_name?: string
+    avatar_url?: string | null
+    bio?: string | null
+    phone?: string | null
+  }) => Promise<void>
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -78,6 +86,21 @@ export const useAuthStore = create<AuthState>()(
       signOut: async () => {
         await authService.signOut().catch(() => null)
         get().clearSession()
+      },
+
+      updateUser: (partial) => {
+        set((state) => ({
+          user: state.user ? { ...state.user, ...partial } : null,
+        }))
+      },
+
+      updateProfile: async (payload) => {
+        const userId = get().user?.id
+        if (!userId) return
+
+        await userService.updateProfile(userId, payload)
+        const profile = await authService.profile()
+        set({ user: profile })
       },
   }),
 )

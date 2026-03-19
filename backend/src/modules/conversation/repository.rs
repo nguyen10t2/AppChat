@@ -85,6 +85,55 @@ pub trait ConversationRepository {
     ) -> Result<(), error::SystemError>
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
+
+    /// Cập nhật thông tin nhóm (tên, avatar)
+    async fn update_group_info<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        name: Option<&str>,
+        avatar_url: Option<Option<&str>>,
+        tx: E,
+    ) -> Result<(), error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>;
+
+    /// Lấy user_id của người tạo nhóm
+    async fn get_group_creator<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        tx: E,
+    ) -> Result<Option<Uuid>, error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>;
+
+    /// Thêm participant vào conversation (UPSERT – khôi phục nếu đã từng join)
+    async fn add_participant<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        user_id: &Uuid,
+        tx: E,
+    ) -> Result<(), error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>;
+
+    /// Soft-delete participant (rời nhóm / bị kick)
+    async fn remove_participant<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        user_id: &Uuid,
+        tx: E,
+    ) -> Result<(), error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>;
+
+    /// Lấy danh sách member IDs của nhóm (active, chưa bị xóa)
+    async fn get_group_member_ids<'e, E>(
+        &self,
+        conversation_id: &Uuid,
+        tx: E,
+    ) -> Result<Vec<Uuid>, error::SystemError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 }
 
 #[async_trait::async_trait]

@@ -35,7 +35,7 @@ export function MessageComposer({ disabled, replyTo, onCancelReply, onSend }: Pr
 
     try {
       await onSend({ content, file: currentFile, replyTo })
-    } catch (error) {
+    } catch {
       // Tuỳ chọn: Phục hồi lại tin nhắn nếu gửi lỗi văng exception
       setMessage(content)
       setFile(currentFile)

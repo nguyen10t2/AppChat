@@ -111,3 +111,16 @@ pub struct MessageQueryRequest {
     pub limit: i32,
     pub cursor: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct UpdateGroupRequest {
+    #[validate(length(min = 1, message = "Tên nhóm không được để trống"))]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "crate::utils::double_option")]
+    pub avatar_url: Option<Option<String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct AddMemberRequest {
+    pub user_id: Uuid,
+}

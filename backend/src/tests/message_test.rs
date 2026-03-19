@@ -40,6 +40,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ConversationRepository for MockConversationRepo {
+        async fn update_group_info<'e, E>(&self, _conversation_id: &Uuid, _name: Option<&str>, _avatar_url: Option<Option<&str>>, _tx: E) -> Result<(), error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(()) }
+        async fn get_group_creator<'e, E>(&self, _conversation_id: &Uuid, _tx: E) -> Result<Option<Uuid>, error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(None) }
+        async fn add_participant<'e, E>(&self, _conversation_id: &Uuid, _user_id: &Uuid, _tx: E) -> Result<(), error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(()) }
+        async fn remove_participant<'e, E>(&self, _conversation_id: &Uuid, _user_id: &Uuid, _tx: E) -> Result<(), error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(()) }
+        async fn get_group_member_ids<'e, E>(&self, _conversation_id: &Uuid, _tx: E) -> Result<Vec<Uuid>, error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(vec![]) }
         fn get_pool(&self) -> &sqlx::Pool<sqlx::Postgres> {
             &self.pool
         }

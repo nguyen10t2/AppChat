@@ -10,8 +10,7 @@ export function FriendsPage() {
   }, [loadFriends, loadRequests])
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-xl font-semibold">Quản lý bạn bè</h2>
+    <div className="flex h-full w-full overflow-hidden">
       <FriendManager />
     </div>
   )

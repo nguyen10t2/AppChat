@@ -143,6 +143,27 @@ pub enum ServerMessage {
     /// Group chat mới được tạo
     NewGroup { conversation: serde_json::Value },
 
+    /// Group info (tên, avatar) được cập nhật
+    GroupUpdated {
+        conversation_id: Uuid,
+        name: Option<String>,
+        avatar_url: Option<Option<String>>,
+    },
+
+    /// Thành viên mới được thêm vào nhóm
+    MemberAdded {
+        conversation_id: Uuid,
+        user_id: Uuid,
+        display_name: String,
+        avatar_url: Option<String>,
+    },
+
+    /// Thành viên rời/bị kick khỏi nhóm
+    MemberRemoved {
+        conversation_id: Uuid,
+        user_id: Uuid,
+    },
+
     /// User bắt đầu typing
     UserTyping {
         conversation_id: Uuid,

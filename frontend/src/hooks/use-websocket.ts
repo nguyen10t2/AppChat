@@ -26,7 +26,6 @@ function normalizeMessage(raw: { _id?: string; id?: string } & Record<string, un
 
 export function useWebSocketBridge() {
   const token = useAuthStore((state) => state.accessToken)
-  const loadConversations = useChatStore((state) => state.loadConversations)
 
   useEffect(() => {
     if (!token) {
@@ -45,8 +44,63 @@ export function useWebSocketBridge() {
           const normalized = normalizeMessage(message.message)
           if (normalized) {
             chatState.receiveMessage(normalized)
+            chatState.updateConversationLastMessage({
+              conversationId: normalized.conversation_id,
+              message: normalized,
+              unreadCounts: message.unread_counts,
+            })
+
+            if (chatState.activeConversationId === normalized.conversation_id) {
+              void chatState.markAsSeen(normalized.conversation_id)
+            }
           }
-          void loadConversations()
+          break
+        }
+        case 'new-group': {
+          if (message.conversation) {
+            chatState.addConversation(message.conversation)
+          }
+          toast.success('Bạn đã được thêm vào một nhóm mới')
+          break
+        }
+        case 'group-updated': {
+          const conversation = chatState.conversations.find(
+            (item) => item.conversation_id === message.conversation_id,
+          )
+          if (!conversation) break
+
+          chatState.updateConversation(message.conversation_id, {
+            group_info: conversation.group_info
+              ? {
+                  ...conversation.group_info,
+                  name: message.name ?? conversation.group_info.name,
+                  avatar_url:
+                    message.avatar_url === undefined
+                      ? conversation.group_info.avatar_url
+                      : message.avatar_url,
+                }
+              : null,
+          })
+          break
+        }
+        case 'member-added': {
+          chatState.addParticipant(message.conversation_id, {
+            user_id: message.user_id,
+            display_name: message.display_name,
+            avatar_url: message.avatar_url,
+            unread_count: 0,
+            joined_at: new Date().toISOString(),
+          })
+          break
+        }
+        case 'member-removed': {
+          const userId = useAuthStore.getState().user?.id
+          if (message.user_id === userId) {
+            toast.info('Bạn đã rời khỏi nhóm hoặc bị xóa khỏi nhóm')
+            chatState.removeConversation(message.conversation_id)
+          } else {
+            chatState.removeParticipant(message.conversation_id, message.user_id)
+          }
           break
         }
         case 'message-edited': {
@@ -94,5 +148,5 @@ export function useWebSocketBridge() {
       unsubscribe()
       wsClient.disconnect()
     }
-  }, [loadConversations, token])
+  }, [token])
 }

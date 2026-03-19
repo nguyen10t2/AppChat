@@ -12,4 +12,16 @@ export const userService = {
     const response = await http.post('/users/presence', { user_ids: userIds })
     return unwrapData<PresenceItem[]>(response)
   },
+
+  async updateProfile(
+    userId: string,
+    payload: {
+      display_name?: string
+      avatar_url?: string | null
+      bio?: string | null
+      phone?: string | null
+    },
+  ): Promise<void> {
+    await http.patch(`/users/${userId}`, payload)
+  },
 }
