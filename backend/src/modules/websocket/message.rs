@@ -6,6 +6,35 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallSignalingType {
+    Offer,
+    Answer,
+    IceCandidate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallSignalingMessage {
+    pub call_id: Uuid,
+    pub signaling_type: CallSignalingType,
+    pub sdp: Option<String>,
+    pub candidate: Option<String>,
+    pub sdp_mid: Option<String>,
+    pub sdp_mline_index: Option<u16>,
+    pub sender_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallRequestMessage {
+    pub call_id: Uuid,
+    pub conversation_id: Uuid,
+    pub call_type: String,
+    pub initiator_id: Uuid,
+    pub initiator_name: String,
+    pub initiator_avatar: Option<String>,
+}
+
 /// Messages được gửi từ client đến server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -33,6 +62,9 @@ pub enum ClientMessage {
 
     /// Ping để giữ connection alive
     Ping,
+
+    /// WebRTC signaling message relay
+    CallSignaling(CallSignalingMessage),
 }
 
 /// Thông tin last message gọn nhẹ để gửi trong events
@@ -178,6 +210,45 @@ pub enum ServerMessage {
 
     /// Pong response cho Ping
     Pong,
+
+    /// Cuộc gọi đến
+    CallRequest {
+        call_id: Uuid,
+        conversation_id: Uuid,
+        call_type: String,
+        initiator_id: Uuid,
+        initiator_name: String,
+        initiator_avatar: Option<String>,
+    },
+
+    /// Chấp nhận cuộc gọi
+    CallAccept {
+        call_id: Uuid,
+        responder_id: Uuid,
+    },
+
+    /// Từ chối cuộc gọi
+    CallReject {
+        call_id: Uuid,
+        reason: Option<String>,
+        rejected_by: Uuid,
+    },
+
+    /// Hủy cuộc gọi từ phía người gọi
+    CallCancel {
+        call_id: Uuid,
+        canceled_by: Uuid,
+    },
+
+    /// Kết thúc cuộc gọi
+    CallEnd {
+        call_id: Uuid,
+        duration_seconds: i32,
+        ended_by: Uuid,
+    },
+
+    /// Relay SDP/ICE qua signaling channel
+    CallSignaling(CallSignalingMessage),
 
     /// Lỗi xảy ra
     Error { message: String },

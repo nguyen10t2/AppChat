@@ -23,13 +23,7 @@ mod tests {
     use crate::modules::message::schema::{MessageEntity, MessageType};
     use crate::modules::message::service::{MessageRoute, MessageService};
     use crate::modules::websocket::server::WebSocketServer;
-
-    fn dummy_pool() -> sqlx::PgPool {
-        sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect_lazy("postgres://postgres:postgres@localhost/postgres")
-            .expect("failed to create lazy pool")
-    }
+    use crate::tests::mock::database::MockDatabase;
 
     #[derive(Clone)]
     struct MockConversationRepo {
@@ -396,7 +390,7 @@ mod tests {
         Uuid,
         Uuid,
     ) {
-        let pool = dummy_pool();
+        let pool = MockDatabase::new().pool();
         let direct_unread_calls = Arc::new(Mutex::new(0));
         let group_unread_calls = Arc::new(Mutex::new(0));
 

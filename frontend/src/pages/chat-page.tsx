@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { ArrowLeftIcon, Info, CaretLeft, CaretRight } from '@phosphor-icons/react'
 import { Plus } from 'lucide-react'
+import { Phone, Video } from 'lucide-react'
 import { ConversationList } from '@/components/chat/conversation-list'
 import { MessagePane } from '@/components/chat/message-pane'
 import { MessageComposer } from '@/components/chat/message-composer'
@@ -12,6 +13,7 @@ import { GroupInfoPanel } from '@/components/chat/group-info-panel'
 import { useAuth } from '@/hooks/use-auth'
 import { useChat } from '@/hooks/use-chat'
 import { usePresenceStore } from '@/stores/presence.store'
+import { useCallStore } from '@/stores/call.store'
 import { fileUploadService } from '@/services/file-upload.service'
 import { extractErrorMsg } from '@/lib/api'
 import type { Message } from '@/types/chat'
@@ -41,6 +43,7 @@ export function ChatPage() {
 
   const presenceMap = usePresenceStore((state) => state.byUserId)
   const fetchPresence = usePresenceStore((state) => state.fetchBatch)
+  const initiateCall = useCallStore((state) => state.initiateCall)
 
   useEffect(() => {
     void loadConversations()
@@ -163,6 +166,33 @@ export function ChatPage() {
               </p>
             )}
           </div>
+
+          {activeConversation?._type === 'direct' && activeConversationId && (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => {
+                  void initiateCall(activeConversationId, 'audio').catch((error) => {
+                    toast.error(extractErrorMsg(error))
+                  })
+                }}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted transition-colors"
+                title="Gọi thoại"
+              >
+                <Phone size={18} />
+              </button>
+              <button
+                onClick={() => {
+                  void initiateCall(activeConversationId, 'video').catch((error) => {
+                    toast.error(extractErrorMsg(error))
+                  })
+                }}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted transition-colors"
+                title="Gọi video"
+              >
+                <Video size={18} />
+              </button>
+            </div>
+          )}
 
           {activeConversation?._type === 'group' && (
             <button

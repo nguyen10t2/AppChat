@@ -14,6 +14,7 @@ import { useWebSocketBridge } from '@/hooks/use-websocket'
 import { cn } from '@/lib/utils'
 
 import { SettingsPanel } from '@/components/layout/settings-panel'
+import { CallLayer } from '@/components/call/call-layer'
 
 export function ProtectedLayout() {
   const navigate = useNavigate()
@@ -119,6 +120,7 @@ export function ProtectedLayout() {
         open={isSettingsOpen}
         onOpenChange={setIsSettingsOpen}
       />
+      <CallLayer />
     </div>
   )
 }

@@ -18,7 +18,8 @@ where
     )
     .service(
         // Backward compatibility route (planned deprecation)
-        web::resource("/{file_id}")
+        // IMPORTANT: constrain to UUID to avoid shadowing other top-level routes like /calls
+        web::resource("/{file_id:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}}")
             .route(web::get().to(crate::modules::file_upload::handle::get_file::<R>))
             .route(web::delete().to(crate::modules::file_upload::handle::delete_file::<R>)),
     );

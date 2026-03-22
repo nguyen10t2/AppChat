@@ -13,6 +13,7 @@ type ChatState = {
   typingUsers: Record<string, string[]>
   loadConversations: () => Promise<void>
   openConversation: (conversationId: string) => Promise<void>
+  refreshConversationMessages: (conversationId: string) => Promise<void>
   sendMessage: (payload: {
     content?: string
     fileUrl?: string
@@ -81,6 +82,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (alreadyLoaded) return
 
+    const page = await conversationService.getMessages(conversationId, {
+      limit: 30,
+      cursor: null,
+    })
+
+    set((state) => ({
+      messagesByConversation: {
+        ...state.messagesByConversation,
+        [conversationId]: page.messages,
+      },
+    }))
+  },
+
+  refreshConversationMessages: async (conversationId) => {
     const page = await conversationService.getMessages(conversationId, {
       limit: 30,
       cursor: null,

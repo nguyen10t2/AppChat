@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { wsClient } from '@/lib/ws'
 import { useAuthStore } from '@/stores/auth.store'
 import { useChatStore } from '@/stores/chat.store'
+import { useCallStore } from '@/stores/call.store'
 import { usePresenceStore } from '@/stores/presence.store'
 
 function normalizeMessage(raw: { _id?: string; id?: string } & Record<string, unknown>) {
@@ -14,7 +15,18 @@ function normalizeMessage(raw: { _id?: string; id?: string } & Record<string, un
     conversation_id: String(raw.conversation_id ?? ''),
     sender_id: String(raw.sender_id ?? ''),
     reply_to_id: (raw.reply_to_id as string | null | undefined) ?? null,
-    _type: String(raw._type ?? 'text') as 'text' | 'image' | 'video' | 'file' | 'system',
+    _type: String(raw._type ?? 'text') as
+      | 'text'
+      | 'image'
+      | 'video'
+      | 'file'
+      | 'system'
+      | 'call_request'
+      | 'call_accept'
+      | 'call_reject'
+      | 'call_end'
+      | 'call_cancel'
+      | 'call_signaling',
     content: (raw.content as string | null | undefined) ?? null,
     file_url: (raw.file_url as string | null | undefined) ?? null,
     is_edited: Boolean(raw.is_edited),
@@ -37,6 +49,7 @@ export function useWebSocketBridge() {
 
     const unsubscribe = wsClient.onMessage((message) => {
       const chatState = useChatStore.getState()
+      const callState = useCallStore.getState()
       const presenceState = usePresenceStore.getState()
 
       switch (message.type) {
@@ -133,6 +146,90 @@ export function useWebSocketBridge() {
         }
         case 'user-offline': {
           presenceState.markUserOffline(message.user_id, message.last_seen)
+          break
+        }
+        case 'call-request': {
+          callState.setIncomingCall({
+            call_id: message.call_id,
+            conversation_id: message.conversation_id,
+            call_type: message.call_type,
+            initiator_id: message.initiator_id,
+            initiator_name: message.initiator_name,
+            initiator_avatar: message.initiator_avatar,
+          })
+          break
+        }
+        case 'call-accept': {
+          const current = callState.currentCall
+          if (!current || current.id !== message.call_id) break
+          callState.setCurrentCall({
+            ...current,
+            status: 'accepted',
+            started_at: current.started_at ?? new Date().toISOString(),
+          })
+          break
+        }
+        case 'call-reject': {
+          const conversationId =
+            callState.currentCall?.conversation_id ?? callState.incomingCall?.conversation_id
+
+          if (callState.currentCall?.id === message.call_id) {
+            toast.info('Cuộc gọi đã bị từ chối')
+            callState.resetCallState()
+          }
+
+          if (callState.incomingCall?.call_id === message.call_id) {
+            callState.setIncomingCall(null)
+          }
+
+          if (conversationId) {
+            void chatState.refreshConversationMessages(conversationId)
+          }
+          break
+        }
+        case 'call-cancel': {
+          const conversationId =
+            callState.currentCall?.conversation_id ?? callState.incomingCall?.conversation_id
+
+          if (callState.incomingCall?.call_id === message.call_id) {
+            toast.info('Người gọi đã hủy cuộc gọi')
+            callState.setIncomingCall(null)
+          }
+          if (callState.currentCall?.id === message.call_id) {
+            callState.resetCallState()
+          }
+
+          if (conversationId) {
+            void chatState.refreshConversationMessages(conversationId)
+          }
+          break
+        }
+        case 'call-end': {
+          const conversationId =
+            callState.currentCall?.conversation_id ?? callState.incomingCall?.conversation_id
+
+          if (callState.currentCall?.id === message.call_id) {
+            callState.resetCallState()
+          }
+          if (callState.incomingCall?.call_id === message.call_id) {
+            callState.setIncomingCall(null)
+          }
+
+          if (conversationId) {
+            void chatState.refreshConversationMessages(conversationId)
+          }
+          break
+        }
+        case 'call-signaling': {
+          callState.setLastSignaling({
+            call_id: message.call_id,
+            signaling_type: message.signaling_type,
+            sdp: message.sdp,
+            candidate: message.candidate,
+            sdp_mid: message.sdp_mid,
+            sdp_mline_index: message.sdp_mline_index,
+            sender_id: message.sender_id,
+          })
           break
         }
         case 'error': {

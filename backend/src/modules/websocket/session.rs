@@ -118,6 +118,9 @@ impl WebSocketSessionImpl {
                 // Hàm này chỉ để tương thích với protocol gửi theo text.
                 self.send_to_client(&ServerMessage::Pong);
             }
+            ClientMessage::CallSignaling(payload) => {
+                self.handle_call_signaling(payload);
+            }
         }
     }
 
@@ -266,5 +269,14 @@ impl WebSocketSessionImpl {
 
         self.server
             .broadcast_to_room(conversation_id, &message, Some(user_id));
+    }
+
+    fn handle_call_signaling(&self, payload: super::message::CallSignalingMessage) {
+        if self.require_auth().is_none() {
+            return;
+        }
+
+        self.server
+            .broadcast_to_all(&ServerMessage::CallSignaling(payload));
     }
 }

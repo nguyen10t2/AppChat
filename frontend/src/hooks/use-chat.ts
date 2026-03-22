@@ -11,6 +11,7 @@ export function useChat() {
       loadingConversations: state.loadingConversations,
       loadConversations: state.loadConversations,
       openConversation: state.openConversation,
+      refreshConversationMessages: state.refreshConversationMessages,
       sendMessage: state.sendMessage,
       markAsSeen: state.markAsSeen,
     }))

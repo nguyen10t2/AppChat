@@ -30,7 +30,18 @@ export type Conversation = {
   updated_at: string
 }
 
-export type MessageType = 'text' | 'image' | 'video' | 'file' | 'system'
+export type MessageType =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'file'
+  | 'system'
+  | 'call_request'
+  | 'call_accept'
+  | 'call_reject'
+  | 'call_end'
+  | 'call_cancel'
+  | 'call_signaling'
 
 export type Message = {
   id: string

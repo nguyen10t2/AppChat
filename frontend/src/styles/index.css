@@ -150,9 +150,9 @@
     --accent: 180 100% 60%;
     --accent-foreground: 240 15% 8%;
 
-    /* Chat bubbles in dark mode */
-    --chat-bubble-sent: 280 100% 65%;
-    --chat-bubble-sent-foreground: 0 0% 100%;
+    /* Chat bubbles in dark mode (neutral, readable) */
+    --chat-bubble-sent: 235 18% 26%;
+    --chat-bubble-sent-foreground: 220 20% 96%;
     --chat-bubble-received: 240 15% 18%;
     --chat-bubble-received-foreground: 250 100% 90%;
 
@@ -199,7 +199,7 @@
     /* Dark shadows with glow */
     --shadow-soft: 0 8px 32px -8px hsl(280 100% 70% / 0.25);
     --shadow-glow: 0 0 40px hsl(var(--primary) / 0.4);
-    --shadow-bubble: 0 4px 20px -4px hsl(280 80% 50% / 0.3);
+    --shadow-bubble: 0 4px 16px -6px hsl(220 25% 10% / 0.35);
 
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
@@ -243,6 +243,10 @@
 
   .chat-bubble-received {
     @apply bg-[hsl(var(--chat-bubble-received))] text-[hsl(var(--chat-bubble-received-foreground))] border border-border/50;
+  }
+
+  .chat-bubble-media {
+    @apply bg-transparent text-foreground shadow-none px-0 py-0 border-0;
   }
 
   /* Status indicators */

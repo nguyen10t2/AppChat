@@ -3,14 +3,20 @@ use sqlx::prelude::{FromRow, Type};
 use uuid::Uuid;
 
 #[derive(Debug, PartialEq, Clone, Type, Serialize, Deserialize)]
-#[sqlx(type_name = "message_type", rename_all = "lowercase")]
-#[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "message_type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum MessageType {
     Text,
     Image,
     Video,
     File,
     System,
+    CallRequest,
+    CallAccept,
+    CallReject,
+    CallEnd,
+    CallCancel,
+    CallSignaling,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]

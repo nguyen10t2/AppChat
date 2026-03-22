@@ -13,13 +13,7 @@ mod tests {
     use crate::modules::user::model::{InsertUser, UpdateUser};
     use crate::modules::user::repository::UserRepository;
     use crate::modules::user::schema::{UserEntity, UserRole};
-
-    fn dummy_pool() -> sqlx::PgPool {
-        sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect_lazy("postgres://postgres:postgres@localhost/postgres")
-            .expect("failed to create lazy pool")
-    }
+    use crate::tests::mock::database::MockDatabase;
 
     fn build_user(id: Uuid, username: &str) -> UserEntity {
         UserEntity {
@@ -92,7 +86,7 @@ mod tests {
     impl Default for MockFriendRepo {
         fn default() -> Self {
             Self {
-                pool: dummy_pool(),
+                pool: MockDatabase::new().pool(),
                 friendship: Arc::new(Mutex::new(None)),
                 pending_request: Arc::new(Mutex::new(None)),
                 request_by_id: Arc::new(Mutex::new(None)),

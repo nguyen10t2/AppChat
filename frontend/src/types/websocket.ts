@@ -1,4 +1,5 @@
 import type { Conversation, Message } from '@/types/chat'
+import type { SignalingType } from '@/types/call'
 
 export type ClientWsMessage =
   | { type: 'auth'; token: string }
@@ -7,6 +8,16 @@ export type ClientWsMessage =
   | { type: 'leave_conversation'; conversation_id: string }
   | { type: 'typing_start'; conversation_id: string }
   | { type: 'typing_stop'; conversation_id: string }
+  | {
+      type: 'call_signaling'
+      call_id: string
+      signaling_type: SignalingType
+      sdp?: string
+      candidate?: string
+      sdp_mid?: string
+      sdp_mline_index?: number
+      sender_id: string
+    }
   | { type: 'ping' }
 
 type WsMessageLike = Message & {
@@ -66,3 +77,36 @@ export type ServerWsMessage =
       avatar_url: string | null
     }
   | { type: 'member-removed'; conversation_id: string; user_id: string }
+  | {
+      type: 'call-request'
+      call_id: string
+      conversation_id: string
+      call_type: 'audio' | 'video'
+      initiator_id: string
+      initiator_name: string
+      initiator_avatar: string | null
+    }
+  | { type: 'call-accept'; call_id: string; responder_id: string }
+  | {
+      type: 'call-reject'
+      call_id: string
+      reason?: string | null
+      rejected_by: string
+    }
+  | { type: 'call-cancel'; call_id: string; canceled_by: string }
+  | {
+      type: 'call-end'
+      call_id: string
+      duration_seconds: number
+      ended_by: string
+    }
+  | {
+      type: 'call-signaling'
+      call_id: string
+      signaling_type: SignalingType
+      sdp?: string
+      candidate?: string
+      sdp_mid?: string
+      sdp_mline_index?: number
+      sender_id: string
+    }

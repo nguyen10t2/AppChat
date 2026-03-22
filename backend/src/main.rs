@@ -12,6 +12,11 @@ use crate::{
     configs::{RedisCache, connect_database},
     middlewares::{authentication, authorization},
     modules::{
+        call::{
+            repository_pg::{CallPgRepository, CallParticipantPgRepository},
+            service::CallService,
+            handler::CallHandler,
+        },
         conversation::{
             repository_pg::{
                 ConversationPgRepository, LastMessagePgRepository, ParticipantPgRepository,
@@ -119,6 +124,16 @@ async fn main() -> std::io::Result<()> {
         Arc::new(redis_pool),
         ws_server.clone(),
     );
+    
+    // Call module
+    let call_repo = Arc::new(CallPgRepository::new(db_pool.clone()));
+    let call_participant_repo = Arc::new(CallParticipantPgRepository::new(db_pool.clone()));
+    let call_service = Arc::new(CallService::with_dependencies(
+        call_repo.clone(),
+        call_participant_repo.clone(),
+        ws_server.clone(),
+    ));
+    let call_handler = Arc::new(CallHandler::new(call_service.clone(), Arc::new(user_repo.clone())));
 
     tracing::info!(
         "Starting HTTP server at http://{}:{}",
@@ -152,6 +167,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(ws_server.clone())) // WebSocket server
             .app_data(web::Data::new(presence_service.clone())) // Presence service
             .app_data(web::Data::new(friend_repo.clone())) // Friend repo for WS presence
+            .app_data(web::Data::new(call_handler.clone())) // Call handler
             .service(health_check)
             .service(metrics)
             .service(metrics_json)
@@ -174,7 +190,8 @@ async fn main() -> std::io::Result<()> {
                             .configure(modules::friend::route::configure)
                             .configure(modules::conversation::route::configure)
                             .configure(modules::message::route::configure)
-                            .configure(modules::file_upload::route::configure::<FilePgRepository>),
+                            .configure(modules::file_upload::route::configure::<FilePgRepository>)
+                                .configure(modules::call::route::configure),
                     ),
             )
     })

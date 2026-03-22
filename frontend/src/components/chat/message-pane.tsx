@@ -35,6 +35,10 @@ export function MessagePane({ messages, myUserId, participants, typingUsers, onR
       <div className="space-y-2 flex flex-col">
         {messages.map((message) => {
           const isMine = message.sender_id === myUserId
+          const isCallHistoryMessage =
+            message._type === 'call_end' ||
+            message._type === 'call_reject' ||
+            message._type === 'call_cancel'
           const replyMessage = message.reply_to_id ? messageById.get(message.reply_to_id) : null
           const replySnippet = replyMessage?.content?.trim()
             ? replyMessage.content.replace(/\n+/g, ' ').slice(0, 90)
@@ -43,8 +47,24 @@ export function MessagePane({ messages, myUserId, participants, typingUsers, onR
               : 'Tin nhắn'
           const fileUrl = message.file_url ? resolveAssetUrl(message.file_url) : null
           const text = message.content?.trim() ?? ''
+          const hasImageFile = Boolean(
+            fileUrl && /\.(jpeg|jpg|gif|png|webp|bmp)($|\?)/i.test(fileUrl),
+          )
 
           const sender = participantMap.get(message.sender_id)
+
+          if (isCallHistoryMessage) {
+            const callText = message.content?.trim() || 'Lịch sử cuộc gọi'
+
+            return (
+              <div key={message.id} className="flex justify-center py-1">
+                <div className="max-w-[85%] rounded-full border border-border/60 bg-muted/70 px-3 py-1 text-[11px] text-muted-foreground">
+                  <span className="font-medium">📞 {callText}</span>
+                  <span className="ml-2 opacity-80">{formatTime(message.created_at)}</span>
+                </div>
+              </div>
+            )
+          }
 
           return (
             <div
@@ -70,7 +90,11 @@ export function MessagePane({ messages, myUserId, participants, typingUsers, onR
                 <div
                 className={cn(
                   'w-fit max-w-full rounded-xl px-3 py-2 text-xs transition-opacity',
-                  isMine ? 'chat-bubble-sent' : 'chat-bubble-received',
+                  hasImageFile
+                    ? 'chat-bubble-media'
+                    : isMine
+                      ? 'chat-bubble-sent'
+                      : 'chat-bubble-received',
                   message.is_sending && 'opacity-60',
                 )}
                 onClick={() => onReply(message)}
@@ -82,8 +106,8 @@ export function MessagePane({ messages, myUserId, participants, typingUsers, onR
                 ) : null}
 
                 {fileUrl ? (
-                  /\.(jpeg|jpg|gif|png|webp|bmp)($|\?)/i.test(fileUrl) ? (
-                    <div className="mb-1 overflow-hidden rounded-lg border border-border/50 max-w-[240px]">
+                  hasImageFile ? (
+                    <div className="mb-1 overflow-hidden rounded-lg border border-border/50 bg-background max-w-[240px]">
                       <a href={fileUrl} target="_blank" rel="noreferrer">
                         <img 
                           src={fileUrl} 
@@ -109,7 +133,7 @@ export function MessagePane({ messages, myUserId, participants, typingUsers, onR
                   <p className="break-words whitespace-pre-wrap">{text}</p>
                 ) : null}
 
-                <p className="mt-1 flex items-center gap-1 text-[10px] opacity-70">
+                <p className={cn('mt-1 flex items-center gap-1 text-[10px] opacity-70', hasImageFile && 'px-1')}>
                   {message.is_sending ? 'Đang gửi...' : formatTime(message.created_at)}
                   {message.is_edited && !message.is_sending ? ' • đã sửa' : ''}
                 </p>

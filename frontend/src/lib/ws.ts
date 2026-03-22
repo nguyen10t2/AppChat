@@ -7,12 +7,26 @@ class RawWsClient {
   private socket: WebSocket | null = null
   private listeners = new Set<MessageListener>()
   private reconnectTimer: number | null = null
+  private disconnectTimer: number | null = null
   private token: string | null = null
   private shouldReconnect = false
 
   connect(token: string) {
+    if (this.disconnectTimer) {
+      window.clearTimeout(this.disconnectTimer)
+      this.disconnectTimer = null
+    }
+
     this.token = token
     this.shouldReconnect = true
+
+    if (
+      this.socket &&
+      (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)
+    ) {
+      return
+    }
+
     this.open()
   }
 
@@ -24,11 +38,18 @@ class RawWsClient {
       this.reconnectTimer = null
     }
 
-    if (this.socket) {
-      this.socket.onclose = null
-      this.socket.close()
+    if (this.disconnectTimer) {
+      window.clearTimeout(this.disconnectTimer)
     }
-    this.socket = null
+
+    this.disconnectTimer = window.setTimeout(() => {
+      if (this.socket) {
+        this.socket.onclose = null
+        this.socket.close()
+      }
+      this.socket = null
+      this.disconnectTimer = null
+    }, 250)
   }
 
   onMessage(listener: MessageListener) {
