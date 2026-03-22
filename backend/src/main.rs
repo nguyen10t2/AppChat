@@ -128,16 +128,14 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         let cors = Cors::default()
-            .allowed_origin_fn(|origin, _req_head| {
-                let origin = origin.to_str().ok();
-                matches!(
-                    origin,
-                    Some("http://localhost:5173") | Some("http://127.0.0.1:5173")
-                )
-            })
-	    .allowed_origin("http://f5.soict.io:3000")
+            .allowed_origin("http://localhost:5173")
+            .allowed_origin(&ENV.frontend_url)
             .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-            .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+            .allowed_headers(vec![
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::ACCEPT,
+            ])
             .supports_credentials()
             .max_age(3600);
 

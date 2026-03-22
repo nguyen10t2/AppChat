@@ -184,6 +184,7 @@ export function ChatPage() {
               <MessagePane
                 messages={activeMessages}
                 myUserId={user.id}
+                participants={activeConversation?.participants ?? []}
                 onReply={(message) => setReplyTo(message)}
                 typingUsers={
                   (typingUsers[activeConversationId] ?? []).filter(

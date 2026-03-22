@@ -36,11 +36,11 @@ export function ProtectedLayout() {
 
   const initials = user?.display_name
     ? user.display_name
-        .split(' ')
-        .map((w) => w[0])
-        .join('')
-        .slice(0, 2)
-        .toUpperCase()
+      .split(' ')
+      .map((w) => w[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase()
     : '?'
 
   return (
@@ -48,9 +48,13 @@ export function ProtectedLayout() {
       {/* ── Narrow icon nav (Zalo-style left rail) ── */}
       <nav className="flex h-full w-14 flex-col items-center border-r border-border/60 bg-card/80 py-3 shrink-0">
         {/* App logo / brand */}
-        <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/60 text-primary-foreground text-xs font-bold shadow-md select-none">
-          AC
-        </div>
+        <NavLink
+          to="/chat"
+          title="Trang chủ"
+          className="mb-6 mt-1 flex h-10 w-10 items-center justify-center rounded-xl transition-all hover:scale-110 active:scale-95 overflow-hidden ring-2 ring-transparent hover:ring-primary/20"
+        >
+          <img src="/zula.png" alt="App Logo" className="w-full h-full object-contain" />
+        </NavLink>
 
         {/* Nav icons */}
         <div className="flex flex-1 flex-col items-center gap-1">
@@ -112,8 +116,8 @@ export function ProtectedLayout() {
       </main>
 
       <SettingsPanel
-        open={isSettingsOpen} 
-        onOpenChange={setIsSettingsOpen} 
+        open={isSettingsOpen}
+        onOpenChange={setIsSettingsOpen}
       />
     </div>
   )

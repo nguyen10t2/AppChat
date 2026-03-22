@@ -1,17 +1,19 @@
 import { useMemo, useEffect, useRef } from 'react'
 import { formatTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { Message } from '@/types/chat'
+import type { Message, Participant } from '@/types/chat'
 import { resolveAssetUrl } from '@/lib/url'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
 type Props = {
   messages: Message[]
   myUserId: string
+  participants: Participant[]
   typingUsers: string[]
   onReply: (message: Message) => void
 }
 
-export function MessagePane({ messages, myUserId, typingUsers, onReply }: Props) {
+export function MessagePane({ messages, myUserId, participants, typingUsers, onReply }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -21,6 +23,11 @@ export function MessagePane({ messages, myUserId, typingUsers, onReply }: Props)
   const messageById = useMemo(
     () => new Map(messages.map((message) => [message.id, message])),
     [messages],
+  )
+
+  const participantMap = useMemo(
+    () => new Map(participants.map((p) => [p.user_id, p])),
+    [participants],
   )
 
   return (
@@ -37,14 +44,32 @@ export function MessagePane({ messages, myUserId, typingUsers, onReply }: Props)
           const fileUrl = message.file_url ? resolveAssetUrl(message.file_url) : null
           const text = message.content?.trim() ?? ''
 
+          const sender = participantMap.get(message.sender_id)
+
           return (
             <div
               key={message.id}
-              className={cn('flex', isMine ? 'justify-end' : 'justify-start')}
+              className={cn('flex gap-2', isMine ? 'justify-end' : 'justify-start')}
             >
-              <div
+              {!isMine && (
+                <div className="shrink-0 self-end mb-1">
+                  <Avatar className="h-7 w-7 border bg-muted">
+                    <AvatarImage src={sender?.avatar_url || ''} />
+                    <AvatarFallback className="text-[10px] uppercase">
+                      {sender?.display_name?.charAt(0) ?? '?'}
+                    </AvatarFallback>
+                  </Avatar>
+                </div>
+              )}
+              <div className={cn("max-w-[75%] flex flex-col min-w-0", isMine ? "items-end" : "items-start")}>
+                {!isMine && sender && (
+                   <span className="text-[10px] text-muted-foreground px-1 mb-0.5 truncate max-w-full">
+                     {sender.display_name}
+                   </span>
+                )}
+                <div
                 className={cn(
-                  'max-w-[75%] rounded-xl px-3 py-2 text-xs transition-opacity',
+                  'w-fit max-w-full rounded-xl px-3 py-2 text-xs transition-opacity',
                   isMine ? 'chat-bubble-sent' : 'chat-bubble-received',
                   message.is_sending && 'opacity-60',
                 )}
@@ -57,14 +82,27 @@ export function MessagePane({ messages, myUserId, typingUsers, onReply }: Props)
                 ) : null}
 
                 {fileUrl ? (
-                  <a
-                    href={fileUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mb-1 block underline underline-offset-4"
-                  >
-                    📎 Tệp đính kèm
-                  </a>
+                  /\.(jpeg|jpg|gif|png|webp|bmp)($|\?)/i.test(fileUrl) ? (
+                    <div className="mb-1 overflow-hidden rounded-lg border border-border/50 max-w-[240px]">
+                      <a href={fileUrl} target="_blank" rel="noreferrer">
+                        <img 
+                          src={fileUrl} 
+                          alt="Đính kèm" 
+                          className="w-full h-auto object-cover max-h-[300px]" 
+                          loading="lazy" 
+                        />
+                      </a>
+                    </div>
+                  ) : (
+                    <a
+                      href={fileUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mb-1 block underline underline-offset-4"
+                    >
+                      📎 Tệp đính kèm
+                    </a>
+                  )
                 ) : null}
 
                 {text ? (
@@ -76,6 +114,7 @@ export function MessagePane({ messages, myUserId, typingUsers, onReply }: Props)
                   {message.is_edited && !message.is_sending ? ' • đã sửa' : ''}
                 </p>
               </div>
+            </div>
             </div>
           )
         })}

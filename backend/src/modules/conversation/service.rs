@@ -104,8 +104,12 @@ where
             }
 
             ConversationType::Group => {
+                let mut all_members = member_ids.clone();
+                if !all_members.contains(&user_id) {
+                    all_members.push(user_id);
+                }
                 self.conversation_repo
-                    .create_group_conversation(&name, &member_ids, &user_id, &mut tx)
+                    .create_group_conversation(&name, &all_members, &user_id, &mut tx)
                     .await?
             }
         };
