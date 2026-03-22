@@ -148,6 +148,27 @@ export function CallLayer() {
   useEffect(() => {
     if (!remoteAudioRef.current || !remoteStream) return
     remoteAudioRef.current.srcObject = remoteStream
+
+    remoteAudioRef.current.autoplay = true
+    remoteAudioRef.current.muted = false
+    remoteAudioRef.current.volume = 1
+
+    void remoteAudioRef.current.play().catch(() => undefined)
+
+    const tracks = remoteStream.getAudioTracks()
+    const retryOnUnmute = () => {
+      void remoteAudioRef.current?.play().catch(() => undefined)
+    }
+
+    tracks.forEach((track) => {
+      track.addEventListener('unmute', retryOnUnmute)
+    })
+
+    return () => {
+      tracks.forEach((track) => {
+        track.removeEventListener('unmute', retryOnUnmute)
+      })
+    }
   }, [remoteStream])
 
   useEffect(() => {
@@ -184,6 +205,7 @@ export function CallLayer() {
   return (
     <>
       <IncomingCallModal />
+      {currentCall && <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />}
       {currentCall && !isMinimized && (
         <CallUI
           localVideoRef={(node) => {
@@ -194,12 +216,6 @@ export function CallLayer() {
           }}
           remoteVideoRef={(node) => {
             remoteVideoRef.current = node
-            if (node && remoteStream) {
-              node.srcObject = remoteStream
-            }
-          }}
-          remoteAudioRef={(node) => {
-            remoteAudioRef.current = node
             if (node && remoteStream) {
               node.srcObject = remoteStream
             }

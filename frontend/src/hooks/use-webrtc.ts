@@ -4,8 +4,30 @@ import { useAuthStore } from '@/stores/auth.store'
 import { useCallStore } from '@/stores/call.store'
 import type { Call, WebRTCSignalPayload } from '@/types/call'
 
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }],
+function buildRtcConfig(): RTCConfiguration {
+  const iceServers: RTCIceServer[] = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ]
+
+  const turnUrlsRaw = import.meta.env.VITE_TURN_URLS as string | undefined
+  const turnUsername = import.meta.env.VITE_TURN_USERNAME as string | undefined
+  const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined
+
+  const turnUrls = turnUrlsRaw
+    ?.split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+
+  if (turnUrls && turnUrls.length > 0) {
+    iceServers.push({
+      urls: turnUrls,
+      username: turnUsername,
+      credential: turnCredential,
+    })
+  }
+
+  return { iceServers }
 }
 
 export function useWebRTC() {
@@ -39,10 +61,31 @@ export function useWebRTC() {
     (call: Call) => {
       if (peerRef.current) return peerRef.current
 
-      const pc = new RTCPeerConnection(RTC_CONFIG)
+      const pc = new RTCPeerConnection(buildRtcConfig())
+
+      pc.onconnectionstatechange = () => {
+        console.debug('[webrtc] connectionState:', pc.connectionState)
+      }
+
+      pc.oniceconnectionstatechange = () => {
+        console.debug('[webrtc] iceConnectionState:', pc.iceConnectionState)
+      }
+
+      pc.onicegatheringstatechange = () => {
+        console.debug('[webrtc] iceGatheringState:', pc.iceGatheringState)
+      }
+
+      pc.onicecandidateerror = (event) => {
+        console.warn('[webrtc] icecandidateerror', {
+          url: event.url,
+          errorCode: event.errorCode,
+          errorText: event.errorText,
+        })
+      }
 
       pc.onicecandidate = (event) => {
         if (!event.candidate) return
+        console.debug('[webrtc] local ICE candidate generated')
         sendSignal(call.id, {
           signaling_type: 'ice_candidate',
           candidate: event.candidate.candidate,
@@ -69,8 +112,16 @@ export function useWebRTC() {
       if (localStream) return localStream
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: withVideo,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: withVideo
+          ? {
+              facingMode: 'user',
+            }
+          : false,
       })
 
       setLocalStream(stream)
@@ -130,11 +181,13 @@ export function useWebRTC() {
 
   const handleAnswer = useCallback(async (signal: WebRTCSignalPayload) => {
     if (!signal.sdp || !peerRef.current) return
+    console.debug('[webrtc] received answer')
     await peerRef.current.setRemoteDescription({ type: 'answer', sdp: signal.sdp })
   }, [])
 
   const handleIceCandidate = useCallback(async (signal: WebRTCSignalPayload) => {
     if (!signal.candidate || !peerRef.current) return
+    console.debug('[webrtc] received remote ICE candidate')
 
     await peerRef.current.addIceCandidate({
       candidate: signal.candidate,

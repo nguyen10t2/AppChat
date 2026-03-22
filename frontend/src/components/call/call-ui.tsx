@@ -7,12 +7,11 @@ import { Minimize2 } from 'lucide-react'
 type CallUIProps = {
   localVideoRef: (node: HTMLVideoElement | null) => void
   remoteVideoRef: (node: HTMLVideoElement | null) => void
-  remoteAudioRef: (node: HTMLAudioElement | null) => void
   onEndCall: () => void
   onMinimize: () => void
 }
 
-export function CallUI({ localVideoRef, remoteVideoRef, remoteAudioRef, onEndCall, onMinimize }: CallUIProps) {
+export function CallUI({ localVideoRef, remoteVideoRef, onEndCall, onMinimize }: CallUIProps) {
   const {
     currentCall,
     localStream,
@@ -26,6 +25,9 @@ export function CallUI({ localVideoRef, remoteVideoRef, remoteAudioRef, onEndCal
   if (!currentCall) return null
 
   const isVideoCall = currentCall.call_type === 'video'
+  const hasRemoteAudio = Boolean(
+    remoteStream?.getAudioTracks().some((track) => track.readyState === 'live' && track.enabled),
+  )
 
   const callStatusLabel =
     currentCall.status === 'initiated'
@@ -35,14 +37,14 @@ export function CallUI({ localVideoRef, remoteVideoRef, remoteAudioRef, onEndCal
           ? remoteStream
             ? 'Đã kết nối'
             : 'Đang kết nối media...'
-          : 'Đã kết nối thoại'
+          : hasRemoteAudio
+            ? 'Đã kết nối thoại'
+            : 'Đang kết nối media...'
         : 'Đang kết nối...'
 
   return (
     <div className="fixed inset-0 z-50 bg-black/65 md:grid md:place-items-center md:p-4 md:backdrop-blur-sm">
       <div className="relative flex h-full w-full flex-col overflow-hidden bg-card/95 md:h-[80vh] md:max-w-4xl md:rounded-3xl md:border md:border-border/70 md:shadow-2xl">
-        <audio ref={remoteAudioRef} autoPlay playsInline />
-
         <div className="flex items-center justify-between px-4 py-3 md:px-5 md:py-4">
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">{currentCall.initiator_name}</p>
