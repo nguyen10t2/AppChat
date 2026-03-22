@@ -9,7 +9,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secretpassword}
       POSTGRES_DB: ${POSTGRES_DB:-appchat}
     ports:
-      - "5432:5432"
+      # Chặn truy cập DB từ bên ngoài, chỉ cho phép từ chính server
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./pgdata:/var/lib/postgresql/data
     restart: unless-stopped
@@ -23,7 +24,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Redis cũng chỉ nên lắng nghe nội bộ
+      - "127.0.0.1:6379:6379"
     volumes:
       - ./redisdata:/data
     restart: unless-stopped
@@ -34,7 +36,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      # Ép backend chỉ nhận request từ Nginx (localhost)
+      - "127.0.0.1:8080:8080"
     depends_on:
       db:
         condition: service_healthy
@@ -43,16 +46,13 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      # Ghi đè lại URL để trỏ vào IP nội bộ của container DB và Redis vừa tạo
       - DATABASE_URL=postgres://${POSTGRES_USER:-appchat}:${POSTGRES_PASSWORD:-secretpassword}@db:5432/${POSTGRES_DB:-appchat}
       - REDIS_URL=redis://redis:6379
-      - IP=0.0.0.0 # Bắt buộc phải là 0.0.0.0 để expose port ra ngoài host!!
+      - IP=0.0.0.0
     extra_hosts:
-      - "host.docker.internal:host-gateway" # Cú pháp mapping host trên Linux
-
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     volumes:
-      # Map để lưu file cục bộ nếu không up lên Cloudinary
       - ./uploads:/app/uploads
 
   frontend:
@@ -60,7 +60,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "3000:80"
+      # Ép frontend chỉ nhận request từ Nginx (localhost)
+      - "127.0.0.1:3000:80"
     depends_on:
       - backend
     restart: unless-stopped
