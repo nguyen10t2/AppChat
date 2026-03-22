@@ -11,7 +11,10 @@ use validator::Validate;
 
 use std::sync::LazyLock;
 
-use crate::{api::error, modules::user::schema::UserRole};
+use crate::{
+    api::{error, messages},
+    modules::user::schema::UserRole,
+};
 
 static ARGON2: LazyLock<Argon2<'static>> = LazyLock::new(Argon2::default);
 
@@ -26,9 +29,9 @@ pub async fn hash_password(password: String) -> Result<String, error::SystemErro
         let _ = tx.send(result);
     });
 
-    let hash = rx
-        .await
-        .map_err(|_| error::SystemError::internal_error("Lỗi tạo mật khẩu"))??;
+    let hash = rx.await.map_err(|_| {
+        error::SystemError::internal_error_key(messages::i18n::Key::PasswordHashFailed)
+    })??;
     Ok(hash)
 }
 
@@ -47,8 +50,9 @@ pub async fn verify_password(hash: String, password: String) -> Result<bool, err
         let _ = tx.send(res);
     });
 
-    rx.await
-        .map_err(|_| error::SystemError::internal_error("Lỗi xác thực mật khẩu"))?
+    rx.await.map_err(|_| {
+        error::SystemError::internal_error_key(messages::i18n::Key::PasswordVerifyFailed)
+    })?
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

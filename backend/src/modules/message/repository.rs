@@ -3,8 +3,10 @@ use crate::{api::error, modules::message::schema::MessageEntity};
 
 #[async_trait::async_trait]
 pub trait MessageRepository {
+    /// Returns Postgres pool for service-level transaction entry.
     fn get_pool(&self) -> &sqlx::PgPool;
 
+    /// Finds one non-deleted message by id.
     async fn find_by_id<'e, E>(
         &self,
         message_id: &uuid::Uuid,
@@ -13,6 +15,7 @@ pub trait MessageRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 
+    /// Persists a new message record.
     async fn create<'e, E>(
         &self,
         message: &InsertMessage,
@@ -21,6 +24,7 @@ pub trait MessageRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 
+    /// Returns paginated messages for one conversation.
     async fn find_by_query<'e, E>(
         &self,
         query: &MessageQuery,

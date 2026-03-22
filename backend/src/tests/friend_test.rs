@@ -7,13 +7,16 @@ mod tests {
     use uuid::Uuid;
 
     use crate::api::error;
-    use crate::modules::friend::repository::{FriendRepo, FriendRepository, FriendRequestRepository};
+    use crate::modules::friend::repository::{
+        FriendRepo, FriendRepository, FriendRequestRepository,
+    };
+    use crate::modules::friend::model::{FriendRequestResponse, IdOrInfo};
     use crate::modules::friend::schema::{FriendEntity, FriendRequestEntity};
     use crate::modules::friend::service::FriendService;
     use crate::modules::user::model::{InsertUser, UpdateUser};
     use crate::modules::user::repository::UserRepository;
     use crate::modules::user::schema::{UserEntity, UserRole};
-    use crate::tests::mock::database::MockDatabase;
+    use crate::tests::mock::lazy_mock_pool;
 
     fn build_user(id: Uuid, username: &str) -> UserEntity {
         UserEntity {
@@ -55,8 +58,14 @@ mod tests {
             Ok(Uuid::now_v7())
         }
 
-        async fn update(&self, _id: &Uuid, _user: &UpdateUser) -> Result<UserEntity, error::SystemError> {
-            Err(error::SystemError::internal_error("not used"))
+        async fn update(
+            &self,
+            _id: &Uuid,
+            _user: &UpdateUser,
+        ) -> Result<UserEntity, error::SystemError> {
+            Err(error::SystemError::internal_error_key(
+                crate::api::messages::i18n::Key::InternalServer,
+            ))
         }
 
         async fn delete(&self, _id: &Uuid) -> Result<bool, error::SystemError> {
@@ -81,18 +90,22 @@ mod tests {
         create_request_calls: Arc<Mutex<u32>>,
         delete_request_calls: Arc<Mutex<u32>>,
         delete_friendship_calls: Arc<Mutex<u32>>,
+        requests_to_user: Arc<Mutex<Vec<FriendRequestResponse>>>,
+        requests_from_user: Arc<Mutex<Vec<FriendRequestResponse>>>,
     }
 
     impl Default for MockFriendRepo {
         fn default() -> Self {
             Self {
-                pool: MockDatabase::new().pool(),
+                pool: lazy_mock_pool(),
                 friendship: Arc::new(Mutex::new(None)),
                 pending_request: Arc::new(Mutex::new(None)),
                 request_by_id: Arc::new(Mutex::new(None)),
                 create_request_calls: Arc::new(Mutex::new(0)),
                 delete_request_calls: Arc::new(Mutex::new(0)),
                 delete_friendship_calls: Arc::new(Mutex::new(0)),
+                requests_to_user: Arc::new(Mutex::new(vec![])),
+                requests_from_user: Arc::new(Mutex::new(vec![])),
             }
         }
     }
@@ -197,7 +210,11 @@ mod tests {
         where
             E: sqlx::Executor<'e, Database = sqlx::Postgres>,
         {
-            Ok(vec![])
+            Ok(self
+                .requests_from_user
+                .lock()
+                .expect("friend repo mutex poisoned")
+                .clone())
         }
 
         async fn find_friend_request_to_user<'e, E>(
@@ -208,7 +225,11 @@ mod tests {
         where
             E: sqlx::Executor<'e, Database = sqlx::Postgres>,
         {
-            Ok(vec![])
+            Ok(self
+                .requests_to_user
+                .lock()
+                .expect("friend repo mutex poisoned")
+                .clone())
         }
 
         async fn create_friend_request<'e, E>(
@@ -259,7 +280,10 @@ mod tests {
         }
     }
 
-    fn build_service(friend_repo: MockFriendRepo, user_repo: MockUserRepo) -> FriendService<MockFriendRepo, MockUserRepo> {
+    fn build_service(
+        friend_repo: MockFriendRepo,
+        user_repo: MockUserRepo,
+    ) -> FriendService<MockFriendRepo, MockUserRepo> {
         FriendService::with_dependencies(Arc::new(friend_repo), Arc::new(user_repo))
     }
 
@@ -270,7 +294,10 @@ mod tests {
 
         let result = service.send_friend_request(user_id, user_id, None).await;
 
-        assert!(matches!(result, Err(error::SystemError::BadRequest(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
     }
 
     #[tokio::test]
@@ -281,7 +308,10 @@ mod tests {
             .send_friend_request(Uuid::now_v7(), Uuid::now_v7(), Some("hi".to_string()))
             .await;
 
-        assert!(matches!(result, Err(error::SystemError::NotFound(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::NotFound(_) | error::SystemError::NotFoundKey(_))
+        ));
     }
 
     #[tokio::test]
@@ -312,7 +342,10 @@ mod tests {
             .send_friend_request(sender_id, receiver_id, Some("hello".to_string()))
             .await;
 
-        assert!(matches!(result, Err(error::SystemError::BadRequest(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
     }
 
     #[tokio::test]
@@ -347,6 +380,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_send_friend_request_rejects_existing_pending_request() {
+        let sender_id = Uuid::now_v7();
+        let receiver_id = Uuid::now_v7();
+
+        let mut users = HashMap::new();
+        users.insert(receiver_id, build_user(receiver_id, "receiver"));
+
+        let friend_repo = MockFriendRepo {
+            pending_request: Arc::new(Mutex::new(Some(FriendRequestEntity {
+                id: Uuid::now_v7(),
+                from_user_id: sender_id,
+                to_user_id: receiver_id,
+                message: Some("pending".to_string()),
+                created_at: Utc::now(),
+            }))),
+            ..Default::default()
+        };
+
+        let user_repo = MockUserRepo {
+            users: Arc::new(Mutex::new(users)),
+        };
+
+        let service = build_service(friend_repo, user_repo);
+
+        let result = service
+            .send_friend_request(sender_id, receiver_id, Some("hello".to_string()))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn test_accept_friend_request_rejects_not_found() {
         let service = build_service(MockFriendRepo::default(), MockUserRepo::default());
 
@@ -354,7 +422,10 @@ mod tests {
             .accept_friend_request(Uuid::now_v7(), Uuid::now_v7())
             .await;
 
-        assert!(matches!(result, Err(error::SystemError::NotFound(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::NotFound(_) | error::SystemError::NotFoundKey(_))
+        ));
     }
 
     #[tokio::test]
@@ -376,9 +447,52 @@ mod tests {
 
         let service = build_service(friend_repo, MockUserRepo::default());
 
-        let result = service.accept_friend_request(another_user_id, request_id).await;
+        let result = service
+            .accept_friend_request(another_user_id, request_id)
+            .await;
 
-        assert!(matches!(result, Err(error::SystemError::Forbidden(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_get_friend_requests_merges_to_and_from_lists() {
+        let user_id = Uuid::now_v7();
+
+        let to_request = FriendRequestResponse {
+            id: Uuid::now_v7(),
+            from: IdOrInfo::Id(Uuid::now_v7()),
+            to: IdOrInfo::Id(user_id),
+            message: Some("to-user".to_string()),
+            created_at: Utc::now(),
+        };
+
+        let from_request = FriendRequestResponse {
+            id: Uuid::now_v7(),
+            from: IdOrInfo::Id(user_id),
+            to: IdOrInfo::Id(Uuid::now_v7()),
+            message: Some("from-user".to_string()),
+            created_at: Utc::now(),
+        };
+
+        let friend_repo = MockFriendRepo {
+            requests_to_user: Arc::new(Mutex::new(vec![to_request.clone()])),
+            requests_from_user: Arc::new(Mutex::new(vec![from_request.clone()])),
+            ..Default::default()
+        };
+
+        let service = build_service(friend_repo, MockUserRepo::default());
+
+        let result = service
+            .get_friend_requests(user_id)
+            .await
+            .expect("get friend requests should succeed");
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|item| item.id == to_request.id));
+        assert!(result.iter().any(|item| item.id == from_request.id));
     }
 
     #[tokio::test]
@@ -400,9 +514,14 @@ mod tests {
         let friend_repo_ref = friend_repo.clone();
         let service = build_service(friend_repo, MockUserRepo::default());
 
-        let result = service.decline_friend_request(another_user_id, request_id).await;
+        let result = service
+            .decline_friend_request(another_user_id, request_id)
+            .await;
 
-        assert!(matches!(result, Err(error::SystemError::Forbidden(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
 
         let delete_calls = friend_repo_ref
             .delete_request_calls

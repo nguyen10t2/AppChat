@@ -52,12 +52,34 @@ impl CallRepository for CallPgRepository {
         Ok(call)
     }
 
+    async fn create_call_with_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        initiator_id: Uuid,
+        conversation_id: Uuid,
+        call_type: CallType,
+    ) -> Result<CallEntity, error::SystemError> {
+        let call = sqlx::query_as::<_, CallEntity>(
+            r#"
+            INSERT INTO calls (conversation_id, initiator_id, _type, status)
+            VALUES ($1, $2, $3, 'initiated')
+            RETURNING *
+            "#,
+        )
+        .bind(conversation_id)
+        .bind(initiator_id)
+        .bind(call_type)
+        .fetch_one(tx.as_mut())
+        .await?;
+
+        Ok(call)
+    }
+
     async fn find_by_id(&self, call_id: Uuid) -> Result<Option<CallEntity>, error::SystemError> {
-        let call =
-            sqlx::query_as::<_, CallEntity>("SELECT * FROM calls WHERE id = $1")
-                .bind(call_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let call = sqlx::query_as::<_, CallEntity>("SELECT * FROM calls WHERE id = $1")
+            .bind(call_id)
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(call)
     }
@@ -92,6 +114,37 @@ impl CallRepository for CallPgRepository {
         Ok(call)
     }
 
+    async fn update_call_status_with_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        call_id: Uuid,
+        status: CallStatus,
+    ) -> Result<Option<CallEntity>, error::SystemError> {
+        let call = sqlx::query_as::<_, CallEntity>(
+            r#"
+            UPDATE calls
+            SET
+                status = $2,
+                started_at = CASE
+                    WHEN $2::call_status = 'accepted'::call_status AND started_at IS NULL THEN NOW()
+                    ELSE started_at
+                END,
+                ended_at = CASE
+                    WHEN $2::call_status IN ('rejected'::call_status, 'missed'::call_status) AND ended_at IS NULL THEN NOW()
+                    ELSE ended_at
+                END
+            WHERE id = $1
+            RETURNING *
+            "#,
+        )
+        .bind(call_id)
+        .bind(status)
+        .fetch_optional(tx.as_mut())
+        .await?;
+
+        Ok(call)
+    }
+
     async fn end_call(
         &self,
         call_id: Uuid,
@@ -111,6 +164,31 @@ impl CallRepository for CallPgRepository {
         .bind(call_id)
         .bind(duration_seconds)
         .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(call)
+    }
+
+    async fn end_call_with_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        call_id: Uuid,
+        duration_seconds: i32,
+    ) -> Result<Option<CallEntity>, error::SystemError> {
+        let call = sqlx::query_as::<_, CallEntity>(
+            r#"
+            UPDATE calls
+            SET
+                status = 'ended',
+                ended_at = COALESCE(ended_at, NOW()),
+                duration_seconds = $2
+            WHERE id = $1
+            RETURNING *
+            "#,
+        )
+        .bind(call_id)
+        .bind(duration_seconds)
+        .fetch_optional(tx.as_mut())
         .await?;
 
         Ok(call)
@@ -224,6 +302,30 @@ impl CallRepository for CallPgRepository {
 
         Ok(())
     }
+
+    async fn create_call_message_with_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conversation_id: Uuid,
+        sender_id: Uuid,
+        message_type: MessageType,
+        content: Option<String>,
+    ) -> Result<(), error::SystemError> {
+        sqlx::query(
+            r#"
+            INSERT INTO messages (conversation_id, sender_id, type, content)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(conversation_id)
+        .bind(sender_id)
+        .bind(message_type)
+        .bind(content)
+        .execute(tx.as_mut())
+        .await?;
+
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -261,8 +363,48 @@ impl CallParticipantRepository for CallParticipantPgRepository {
         Ok(participant)
     }
 
-    async fn mark_left(
+    async fn add_participant_with_tx(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        call_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<CallParticipantEntity, error::SystemError> {
+        let participant = sqlx::query_as::<_, CallParticipantEntity>(
+            r#"
+            INSERT INTO call_participants (call_id, user_id, joined_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (call_id, user_id)
+            DO UPDATE SET joined_at = COALESCE(call_participants.joined_at, NOW())
+            RETURNING *
+            "#,
+        )
+        .bind(call_id)
+        .bind(user_id)
+        .fetch_one(tx.as_mut())
+        .await?;
+
+        Ok(participant)
+    }
+
+    async fn mark_left(&self, call_id: Uuid, user_id: Uuid) -> Result<(), error::SystemError> {
+        sqlx::query(
+            r#"
+            UPDATE call_participants
+            SET left_at = COALESCE(left_at, NOW())
+            WHERE call_id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(call_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn mark_left_with_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         call_id: Uuid,
         user_id: Uuid,
     ) -> Result<(), error::SystemError> {
@@ -275,7 +417,7 @@ impl CallParticipantRepository for CallParticipantPgRepository {
         )
         .bind(call_id)
         .bind(user_id)
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
 
         Ok(())

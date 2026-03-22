@@ -2,15 +2,10 @@
 mod tests {
     use std::sync::Arc;
 
-    use actix_web::{
-        App,
-        http::StatusCode,
-        middleware::from_fn,
-        test,
-        web,
-    };
+    use actix_web::{App, http::StatusCode, middleware::from_fn, test, web};
     use uuid::Uuid;
 
+    use crate::configs::AppConfig;
     use crate::configs::connect_database;
     use crate::middlewares::{authentication, authorization};
     use crate::modules::conversation::handle::ConversationSvc;
@@ -23,7 +18,6 @@ mod tests {
     use crate::modules::user::schema::UserRole;
     use crate::modules::websocket::server::WebSocketServer;
     use crate::utils::{Claims, TypeClaims};
-    use crate::ENV;
 
     async fn seed_user(
         pool: &sqlx::PgPool,
@@ -60,14 +54,16 @@ mod tests {
     }
 
     fn build_access_token(user_id: Uuid) -> String {
+        let cfg = AppConfig::from_env_lossy();
         build_claims(user_id)
-            .encode(ENV.jwt_secret.as_ref())
+            .encode(cfg.jwt_secret.as_ref())
             .expect("should encode access token")
     }
 
     fn build_conversation_service(pool: sqlx::PgPool) -> ConversationSvc {
         let participant_repo = ParticipantPgRepository::default();
-        let conversation_repo = ConversationPgRepository::new(pool.clone(), participant_repo.clone());
+        let conversation_repo =
+            ConversationPgRepository::new(pool.clone(), participant_repo.clone());
         let message_repo = MessageRepositoryPg::new(pool);
 
         ConversationService::with_dependencies(
@@ -89,9 +85,14 @@ mod tests {
         let outsider_id = Uuid::now_v7();
         let conversation_id = Uuid::now_v7();
 
-        seed_user(&pool, owner_id, "owner_conv_test", "owner_conv_test@appchat.local")
-            .await
-            .expect("seed owner user should succeed");
+        seed_user(
+            &pool,
+            owner_id,
+            "owner_conv_test",
+            "owner_conv_test@appchat.local",
+        )
+        .await
+        .expect("seed owner user should succeed");
         seed_user(
             &pool,
             outsider_id,
@@ -107,12 +108,14 @@ mod tests {
             .await
             .expect("seed conversation should succeed");
 
-        sqlx::query("INSERT INTO participants (conversation_id, user_id, unread_count) VALUES ($1, $2, 0)")
-            .bind(conversation_id)
-            .bind(owner_id)
-            .execute(&pool)
-            .await
-            .expect("seed participant should succeed");
+        sqlx::query(
+            "INSERT INTO participants (conversation_id, user_id, unread_count) VALUES ($1, $2, 0)",
+        )
+        .bind(conversation_id)
+        .bind(owner_id)
+        .execute(&pool)
+        .await
+        .expect("seed participant should succeed");
 
         let app = test::init_service(
             App::new()
@@ -152,9 +155,14 @@ mod tests {
         let owner_id = Uuid::now_v7();
         let conversation_id = Uuid::now_v7();
 
-        seed_user(&pool, owner_id, "member_conv_test", "member_conv_test@appchat.local")
-            .await
-            .expect("seed member user should succeed");
+        seed_user(
+            &pool,
+            owner_id,
+            "member_conv_test",
+            "member_conv_test@appchat.local",
+        )
+        .await
+        .expect("seed member user should succeed");
 
         sqlx::query("INSERT INTO conversations (id, type) VALUES ($1, 'group')")
             .bind(conversation_id)
@@ -162,12 +170,14 @@ mod tests {
             .await
             .expect("seed conversation should succeed");
 
-        sqlx::query("INSERT INTO participants (conversation_id, user_id, unread_count) VALUES ($1, $2, 0)")
-            .bind(conversation_id)
-            .bind(owner_id)
-            .execute(&pool)
-            .await
-            .expect("seed participant should succeed");
+        sqlx::query(
+            "INSERT INTO participants (conversation_id, user_id, unread_count) VALUES ($1, $2, 0)",
+        )
+        .bind(conversation_id)
+        .bind(owner_id)
+        .execute(&pool)
+        .await
+        .expect("seed participant should succeed");
 
         sqlx::query(
             "INSERT INTO messages (id, conversation_id, sender_id, type, content) VALUES ($1, $2, $3, 'text', $4)",

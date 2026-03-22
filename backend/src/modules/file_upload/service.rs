@@ -3,13 +3,14 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-use crate::api::error;
-use crate::METRICS;
+use crate::api::{error, messages};
+use crate::configs::AppConfig;
 use crate::modules::file_upload::{
     model::{NewFile, UploadConfig},
     repository::FileRepository,
     schema::{FileEntity, FileUploadResponse},
 };
+use crate::observability::AppMetrics;
 
 #[derive(Clone)]
 pub struct FileUploadService<R>
@@ -19,6 +20,7 @@ where
     file_repo: Arc<R>,
     config: UploadConfig,
     cloudinary: Option<CloudinaryConfig>,
+    metrics: Arc<AppMetrics>,
 }
 
 #[derive(Clone)]
@@ -62,11 +64,29 @@ where
     R: FileRepository + Send + Sync,
 {
     pub fn new(file_repo: Arc<R>, config: UploadConfig) -> Self {
-        let cloudinary = Self::parse_cloudinary_from_env();
+        Self::new_with_settings(
+            file_repo,
+            config,
+            Arc::new(AppMetrics::default()),
+            Arc::new(AppConfig::from_env_lossy()),
+        )
+    }
+
+    pub fn new_with_settings(
+        file_repo: Arc<R>,
+        config: UploadConfig,
+        metrics: Arc<AppMetrics>,
+        app_config: Arc<AppConfig>,
+    ) -> Self {
+        let cloudinary = app_config
+            .cloudinary_url
+            .as_deref()
+            .and_then(parse_cloudinary_url);
         Self {
             file_repo,
             config,
             cloudinary,
+            metrics,
         }
     }
 
@@ -74,15 +94,26 @@ where
         Self::new(file_repo, UploadConfig::default())
     }
 
-    fn parse_cloudinary_from_env() -> Option<CloudinaryConfig> {
-        let raw = std::env::var("CLOUDINARY_URL").ok()?;
-        parse_cloudinary_url(&raw)
+    pub fn with_defaults_and_settings(
+        file_repo: Arc<R>,
+        metrics: Arc<AppMetrics>,
+        app_config: Arc<AppConfig>,
+    ) -> Self {
+        Self::new_with_settings(file_repo, UploadConfig::default(), metrics, app_config)
+    }
+
+    async fn begin_tx(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, error::SystemError> {
+        self.file_repo.get_pool().begin().await.map_err(Into::into)
     }
 
     fn unix_timestamp() -> Result<i64, error::SystemError> {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| error::SystemError::internal_error("Không thể lấy timestamp hệ thống"))?
+            .map_err(|_| {
+                error::SystemError::internal_error_key(
+                    messages::i18n::Key::SystemTimestampUnavailable,
+                )
+            })?
             .as_secs() as i64;
 
         Ok(ts)
@@ -102,10 +133,9 @@ where
         bytes: Vec<u8>,
         mime_type: &str,
     ) -> Result<(String, String, String), error::SystemError> {
-        let cloudinary = self
-            .cloudinary
-            .as_ref()
-            .ok_or_else(|| error::SystemError::internal_error("Cloudinary chưa được cấu hình"))?;
+        let cloudinary = self.cloudinary.as_ref().ok_or_else(|| {
+            error::SystemError::internal_error_key(messages::i18n::Key::CloudinaryNotConfigured)
+        })?;
 
         let timestamp = Self::unix_timestamp()?;
         let public_id = format!("appchat/{}", Uuid::now_v7());
@@ -153,10 +183,9 @@ where
     }
 
     async fn delete_on_cloudinary(&self, public_id: &str) -> Result<(), error::SystemError> {
-        let cloudinary = self
-            .cloudinary
-            .as_ref()
-            .ok_or_else(|| error::SystemError::internal_error("Cloudinary chưa được cấu hình"))?;
+        let cloudinary = self.cloudinary.as_ref().ok_or_else(|| {
+            error::SystemError::internal_error_key(messages::i18n::Key::CloudinaryNotConfigured)
+        })?;
 
         let timestamp = Self::unix_timestamp()?;
         let params_to_sign = format!("public_id={public_id}&timestamp={timestamp}");
@@ -198,8 +227,8 @@ where
             }
         }
 
-        Err(error::SystemError::internal_error(
-            "Không thể xóa file trên Cloudinary",
+        Err(error::SystemError::internal_error_key(
+            messages::i18n::Key::CloudinaryDeleteFailed,
         ))
     }
 
@@ -266,14 +295,14 @@ where
         mime_type: String,
         uploaded_by: Uuid,
     ) -> Result<FileUploadResponse, error::SystemError> {
-        METRICS.inc_upload_attempt();
+        self.metrics.inc_upload_attempt();
 
         let result = self
             .upload_file_inner(original_filename, bytes, mime_type, uploaded_by)
             .await;
 
         if result.is_err() {
-            METRICS.inc_upload_failure();
+            self.metrics.inc_upload_failure();
         }
 
         result
@@ -310,7 +339,7 @@ where
         };
 
         // Save metadata to database
-        let mut tx = self.file_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         let new_file = NewFile {
             filename: filename.clone(),
@@ -344,11 +373,10 @@ where
     /// Delete file
     pub async fn delete_file(&self, file_id: &Uuid) -> Result<(), error::SystemError> {
         // Get file metadata first
-        let file = self
-            .file_repo
-            .find_by_id(file_id)
-            .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy tệp"))?;
+        let file =
+            self.file_repo.find_by_id(file_id).await?.ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::FileNotFound)
+            })?;
 
         if let Some(public_id) = file.storage_path.strip_prefix("cloudinary://") {
             self.delete_on_cloudinary(public_id).await?;
@@ -358,7 +386,7 @@ where
         }
 
         // Delete from database
-        let mut tx = self.file_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
         self.file_repo.delete(file_id, &mut *tx).await?;
         tx.commit().await?;
 

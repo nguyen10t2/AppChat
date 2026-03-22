@@ -222,10 +222,7 @@ pub enum ServerMessage {
     },
 
     /// Chấp nhận cuộc gọi
-    CallAccept {
-        call_id: Uuid,
-        responder_id: Uuid,
-    },
+    CallAccept { call_id: Uuid, responder_id: Uuid },
 
     /// Từ chối cuộc gọi
     CallReject {
@@ -235,10 +232,7 @@ pub enum ServerMessage {
     },
 
     /// Hủy cuộc gọi từ phía người gọi
-    CallCancel {
-        call_id: Uuid,
-        canceled_by: Uuid,
-    },
+    CallCancel { call_id: Uuid, canceled_by: Uuid },
 
     /// Kết thúc cuộc gọi
     CallEnd {

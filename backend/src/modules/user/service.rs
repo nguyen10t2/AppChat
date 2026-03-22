@@ -1,10 +1,9 @@
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::ENV;
 use crate::api::error;
 use crate::api::messages;
-use crate::configs::{CacheStore, RedisCache};
+use crate::configs::{AppConfig, CacheStore, RedisCache};
 use crate::modules::CACHE_TTL;
 use crate::modules::user::model::{
     SignInModel, SignUpModel, UpdateUser, UpdateUserModel, UserResponse,
@@ -21,6 +20,7 @@ where
 {
     repo: Arc<U>,
     cache: Arc<C>,
+    config: Arc<AppConfig>,
 }
 
 impl<U, C> UserService<U, C>
@@ -29,7 +29,19 @@ where
     C: CacheStore + Send + Sync,
 {
     pub fn with_dependencies(repo: Arc<U>, cache: Arc<C>) -> Self {
-        UserService { repo, cache }
+        Self::with_dependencies_and_config(repo, cache, Arc::new(AppConfig::from_env_lossy()))
+    }
+
+    pub fn with_dependencies_and_config(
+        repo: Arc<U>,
+        cache: Arc<C>,
+        config: Arc<AppConfig>,
+    ) -> Self {
+        UserService {
+            repo,
+            cache,
+            config,
+        }
     }
 
     /// Lấy thông tin người dùng theo ID (có cache qua Redis)
@@ -45,7 +57,9 @@ where
                 .await?;
             Ok(UserResponse::from(entity))
         } else {
-            Err(error::SystemError::not_found(messages::error::USER_NOT_FOUND))
+            Err(error::SystemError::not_found_key(
+                messages::i18n::Key::UserNotFound,
+            ))
         }
     }
 
@@ -56,8 +70,8 @@ where
         user: UpdateUserModel,
     ) -> Result<UserResponse, error::SystemError> {
         if user.is_empty() {
-            return Err(error::SystemError::bad_request(
-                messages::error::UPDATE_EMPTY_PAYLOAD,
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::UpdateEmptyPayload,
             ));
         }
 
@@ -83,7 +97,9 @@ where
     pub async fn delete(&self, id: Uuid) -> Result<(), error::SystemError> {
         let deleted = self.repo.delete(&id).await?;
         if !deleted {
-            return Err(error::SystemError::not_found(messages::error::USER_NOT_FOUND));
+            return Err(error::SystemError::not_found_key(
+                messages::i18n::Key::UserNotFound,
+            ));
         }
         Ok(())
     }
@@ -110,41 +126,41 @@ where
             .find_by_username(&user.username)
             .await?
             .ok_or_else(|| {
-                error::SystemError::unauthorized("Tài khoản hoặc mật khẩu không chính xác")
+                error::SystemError::unauthorized_key(messages::i18n::Key::InvalidCredentials)
             })?;
 
         let valid = verify_password(user_entity.hash_password.clone(), user.password).await?;
         if !valid {
-            return Err(error::SystemError::unauthorized(
-                "Tài khoản hoặc mật khẩu không chính xác",
+            return Err(error::SystemError::unauthorized_key(
+                messages::i18n::Key::InvalidCredentials,
             ));
         }
 
         let access_token = Claims::new(
             &user_entity.id,
             &user_entity.role,
-            ENV.access_token_expiration,
+            self.config.access_token_expiration,
         )
         .with_type(TypeClaims::AccessToken)
-        .encode(ENV.jwt_secret.as_ref())?;
+        .encode(self.config.jwt_secret.as_ref())?;
 
         let jti = Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext));
 
         let refresh_token = Claims::new(
             &user_entity.id,
             &user_entity.role,
-            ENV.refresh_token_expiration,
+            self.config.refresh_token_expiration,
         )
         .with_jti(jti)
         .with_type(TypeClaims::RefreshToken)
-        .encode(ENV.jwt_secret.as_ref())?;
+        .encode(self.config.jwt_secret.as_ref())?;
 
         let refresh_key = format!("refresh_token:{jti}");
         self.cache
             .set(
                 &refresh_key,
                 &user_entity.id,
-                ENV.refresh_token_expiration as usize,
+                self.config.refresh_token_expiration as usize,
             )
             .await?;
 
@@ -157,7 +173,7 @@ where
             return Ok(());
         };
 
-        let payload = Claims::decode(&token, ENV.jwt_secret.as_ref())?;
+        let payload = Claims::decode(&token, self.config.jwt_secret.as_ref())?;
 
         let Some(TypeClaims::RefreshToken) = payload._type else {
             return Ok(());
@@ -178,13 +194,13 @@ where
         &self,
         old_refresh_token: Option<String>,
     ) -> Result<(String, String), error::SystemError> {
-        let invalid = || error::SystemError::unauthorized(messages::error::INVALID_TOKEN);
+        let invalid = || error::SystemError::unauthorized_key(messages::i18n::Key::InvalidToken);
 
         let Some(old_refresh_token) = old_refresh_token else {
             return Err(invalid());
         };
 
-        let payload = Claims::decode(&old_refresh_token, ENV.jwt_secret.as_ref())?;
+        let payload = Claims::decode(&old_refresh_token, self.config.jwt_secret.as_ref())?;
 
         let Some(TypeClaims::RefreshToken) = payload._type else {
             return Err(invalid());
@@ -205,22 +221,28 @@ where
         let new_jti = Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext));
         let new_key = format!("refresh_token:{new_jti}");
 
-        let new_access_token =
-            Claims::new(&payload.sub, &payload.role, ENV.access_token_expiration)
-                .with_type(TypeClaims::AccessToken)
-                .encode(ENV.jwt_secret.as_ref())?;
+        let new_access_token = Claims::new(
+            &payload.sub,
+            &payload.role,
+            self.config.access_token_expiration,
+        )
+        .with_type(TypeClaims::AccessToken)
+        .encode(self.config.jwt_secret.as_ref())?;
 
-        let new_refresh_token =
-            Claims::new(&payload.sub, &payload.role, ENV.refresh_token_expiration)
-                .with_jti(new_jti)
-                .with_type(TypeClaims::RefreshToken)
-                .encode(ENV.jwt_secret.as_ref())?;
+        let new_refresh_token = Claims::new(
+            &payload.sub,
+            &payload.role,
+            self.config.refresh_token_expiration,
+        )
+        .with_jti(new_jti)
+        .with_type(TypeClaims::RefreshToken)
+        .encode(self.config.jwt_secret.as_ref())?;
 
         self.cache
             .set(
                 &new_key,
                 &payload.sub,
-                ENV.refresh_token_expiration as usize,
+                self.config.refresh_token_expiration as usize,
             )
             .await?;
 
@@ -235,14 +257,14 @@ where
     ) -> Result<Vec<UserResponse>, error::SystemError> {
         // Validate query length
         if query.trim().is_empty() {
-            return Err(error::SystemError::bad_request(
-                "Từ khóa tìm kiếm không được để trống",
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::SearchQueryRequired,
             ));
         }
 
         if query.len() < 2 {
-            return Err(error::SystemError::bad_request(
-                "Từ khóa tìm kiếm phải có ít nhất 2 ký tự",
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::SearchQueryTooShort,
             ));
         }
 

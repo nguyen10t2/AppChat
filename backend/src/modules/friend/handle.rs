@@ -18,6 +18,14 @@ use crate::{
 
 pub type FriendSvc = FriendService<FriendRepositoryPg, UserRepositoryPg>;
 
+fn current_user_id(req: &HttpRequest) -> Result<Uuid, error::Error> {
+    Ok(get_extensions::<Claims>(req)?.sub)
+}
+
+fn path_id(path: web::Path<Uuid>) -> Uuid {
+    *path
+}
+
 /// Gửi yêu cầu kết bạn cho người khác
 #[post("/requests")]
 pub async fn send_friend_request(
@@ -25,7 +33,7 @@ pub async fn send_friend_request(
     body: web::Json<FriendRequestBody>,
     req: HttpRequest,
 ) -> Result<success::Success<FriendRequestEntity>, error::Error> {
-    let sender_id = get_extensions::<Claims>(&req)?.sub;
+    let sender_id = current_user_id(&req)?;
     let request = friend_service
         .send_friend_request(sender_id, body.recipient_id, body.message.clone())
         .await?;
@@ -40,9 +48,10 @@ pub async fn accept_friend_request(
     request_id: web::Path<Uuid>,
     req: HttpRequest,
 ) -> Result<success::Success<FriendResponse>, error::Error> {
-    let receiver_id = get_extensions::<Claims>(&req)?.sub;
+    let receiver_id = current_user_id(&req)?;
+    let request_id = path_id(request_id);
     let response = friend_service
-        .accept_friend_request(receiver_id, *request_id)
+        .accept_friend_request(receiver_id, request_id)
         .await?;
 
     Ok(success::Success::ok(Some(response)).message("Chấp nhận yêu cầu kết bạn thành công"))
@@ -55,9 +64,10 @@ pub async fn decline_friend_request(
     request_id: web::Path<Uuid>,
     req: HttpRequest,
 ) -> Result<success::Success<()>, error::Error> {
-    let receiver_id = get_extensions::<Claims>(&req)?.sub;
+    let receiver_id = current_user_id(&req)?;
+    let request_id = path_id(request_id);
     friend_service
-        .decline_friend_request(receiver_id, *request_id)
+        .decline_friend_request(receiver_id, request_id)
         .await?;
     Ok(success::Success::no_content())
 }
@@ -68,7 +78,7 @@ pub async fn list_friends(
     friend_service: web::Data<FriendSvc>,
     req: HttpRequest,
 ) -> Result<success::Success<Vec<FriendResponse>>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
     let friends = friend_service.get_friends(user_id).await?;
 
     Ok(success::Success::ok(Some(friends)).message("Lấy danh sách bạn bè thành công"))
@@ -80,7 +90,7 @@ pub async fn list_friend_requests(
     friend_service: web::Data<FriendSvc>,
     req: HttpRequest,
 ) -> Result<success::Success<Vec<FriendRequestResponse>>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
     let requests = friend_service.get_friend_requests(user_id).await?;
 
     Ok(success::Success::ok(Some(requests)).message("Lấy danh sách lời mời kết bạn thành công"))
@@ -93,7 +103,8 @@ pub async fn remove_friend(
     friend_id: web::Path<Uuid>,
     req: HttpRequest,
 ) -> Result<success::Success<()>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
-    friend_service.remove_friend(user_id, *friend_id).await?;
+    let user_id = current_user_id(&req)?;
+    let friend_id = path_id(friend_id);
+    friend_service.remove_friend(user_id, friend_id).await?;
     Ok(success::Success::no_content())
 }

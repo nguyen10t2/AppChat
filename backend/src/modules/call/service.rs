@@ -3,7 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    api::error,
+    api::{error, messages},
     modules::{
         call::{
             model::{
@@ -16,6 +16,7 @@ use crate::{
         message::schema::MessageType,
         websocket::{message::ServerMessage, server::WebSocketServer},
     },
+    observability::AppMetrics,
 };
 
 #[derive(Clone)]
@@ -27,6 +28,7 @@ where
     call_repo: Arc<C>,
     participant_repo: Arc<P>,
     ws_server: Arc<WebSocketServer>,
+    metrics: Arc<AppMetrics>,
 }
 
 impl<C, P> CallService<C, P>
@@ -39,11 +41,41 @@ where
         participant_repo: Arc<P>,
         ws_server: Arc<WebSocketServer>,
     ) -> Self {
+        Self::with_dependencies_and_metrics(
+            call_repo,
+            participant_repo,
+            ws_server,
+            Arc::new(AppMetrics::default()),
+        )
+    }
+
+    pub fn with_dependencies_and_metrics(
+        call_repo: Arc<C>,
+        participant_repo: Arc<P>,
+        ws_server: Arc<WebSocketServer>,
+        metrics: Arc<AppMetrics>,
+    ) -> Self {
         Self {
             call_repo,
             participant_repo,
             ws_server,
+            metrics,
         }
+    }
+
+    async fn begin_tx(
+        &self,
+    ) -> Result<Option<sqlx::Transaction<'_, sqlx::Postgres>>, error::SystemError> {
+        if !self.call_repo.supports_transactions() {
+            return Ok(None);
+        }
+
+        self.call_repo
+            .get_pool()
+            .begin()
+            .await
+            .map(Some)
+            .map_err(Into::into)
     }
 
     pub async fn initiate_call(
@@ -58,18 +90,40 @@ where
             .is_user_in_conversation(request.conversation_id, user_id)
             .await?;
 
-        if !is_member {
-            return Err(error::SystemError::forbidden(
-                "Bạn không phải thành viên của cuộc trò chuyện này",
-            ));
-        }
+        ensure_call_member(
+            is_member,
+            messages::i18n::Key::NotConversationMember,
+        )?;
 
-        let call = self
-            .call_repo
-            .create_call(user_id, request.conversation_id, request.call_type.clone())
-            .await?;
+        let call = if let Some(mut tx) = self.begin_tx().await? {
+            let call = self
+                .call_repo
+                .create_call_with_tx(
+                    &mut tx,
+                    user_id,
+                    request.conversation_id,
+                    request.call_type.clone(),
+                )
+                .await?;
 
-        self.participant_repo.add_participant(call.id, user_id).await?;
+            self.participant_repo
+                .add_participant_with_tx(&mut tx, call.id, user_id)
+                .await?;
+
+            tx.commit().await?;
+            call
+        } else {
+            let call = self
+                .call_repo
+                .create_call(user_id, request.conversation_id, request.call_type.clone())
+                .await?;
+
+            self.participant_repo
+                .add_participant(call.id, user_id)
+                .await?;
+
+            call
+        };
 
         let member_ids = self
             .call_repo
@@ -92,6 +146,8 @@ where
             );
         }
 
+        self.metrics.inc_call_initiate();
+
         Ok(InitiateCallResponse {
             call_id: call.id,
             status: CallStatus::Initiated,
@@ -104,28 +160,22 @@ where
         call_id: Uuid,
         request: RespondCallRequest,
     ) -> Result<(), error::SystemError> {
-        let call = self
-            .call_repo
-            .find_by_id(call_id)
-            .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc gọi"))?;
+        let call =
+            self.call_repo.find_by_id(call_id).await?.ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::CallNotFound)
+            })?;
 
         let is_member = self
             .call_repo
             .is_user_in_conversation(call.conversation_id, user_id)
             .await?;
 
-        if !is_member {
-            return Err(error::SystemError::forbidden(
-                "Bạn không thể phản hồi cuộc gọi này",
-            ));
-        }
-
-        if call.status != CallStatus::Initiated {
-            return Err(error::SystemError::bad_request(
-                "Cuộc gọi không còn ở trạng thái chờ phản hồi",
-            ));
-        }
+        ensure_call_member(is_member, messages::i18n::Key::CallResponseNotAllowed)?;
+        ensure_call_status(
+            call.status,
+            CallStatus::Initiated,
+            messages::i18n::Key::CallNotAwaitingResponse,
+        )?;
 
         let member_ids = self
             .call_repo
@@ -133,11 +183,25 @@ where
             .await?;
 
         if request.accept {
-            self.call_repo
-                .update_call_status(call_id, CallStatus::Accepted)
-                .await?;
+            if let Some(mut tx) = self.begin_tx().await? {
+                self.call_repo
+                    .update_call_status_with_tx(&mut tx, call_id, CallStatus::Accepted)
+                    .await?;
 
-            self.participant_repo.add_participant(call_id, user_id).await?;
+                self.participant_repo
+                    .add_participant_with_tx(&mut tx, call_id, user_id)
+                    .await?;
+
+                tx.commit().await?;
+            } else {
+                self.call_repo
+                    .update_call_status(call_id, CallStatus::Accepted)
+                    .await?;
+
+                self.participant_repo
+                    .add_participant(call_id, user_id)
+                    .await?;
+            }
 
             self.ws_server.send_to_users(
                 &member_ids,
@@ -146,19 +210,45 @@ where
                     responder_id: user_id,
                 },
             );
-        } else {
-            self.call_repo
-                .update_call_status(call_id, CallStatus::Rejected)
-                .await?;
 
-            self.call_repo
-                .create_call_message(
-                    call.conversation_id,
-                    user_id,
-                    MessageType::CallReject,
-                    Some(build_call_reject_message(&call.call_type, request.reason.as_deref())),
-                )
-                .await?;
+            self.metrics.inc_call_accept();
+        } else {
+            if let Some(mut tx) = self.begin_tx().await? {
+                self.call_repo
+                    .update_call_status_with_tx(&mut tx, call_id, CallStatus::Rejected)
+                    .await?;
+
+                self.call_repo
+                    .create_call_message_with_tx(
+                        &mut tx,
+                        call.conversation_id,
+                        user_id,
+                        MessageType::CallReject,
+                        Some(build_call_reject_message(
+                            &call.call_type,
+                            request.reason.as_deref(),
+                        )),
+                    )
+                    .await?;
+
+                tx.commit().await?;
+            } else {
+                self.call_repo
+                    .update_call_status(call_id, CallStatus::Rejected)
+                    .await?;
+
+                self.call_repo
+                    .create_call_message(
+                        call.conversation_id,
+                        user_id,
+                        MessageType::CallReject,
+                        Some(build_call_reject_message(
+                            &call.call_type,
+                            request.reason.as_deref(),
+                        )),
+                    )
+                    .await?;
+            }
 
             self.ws_server.send_to_users(
                 &member_ids,
@@ -168,43 +258,66 @@ where
                     rejected_by: user_id,
                 },
             );
+
+            self.metrics.inc_call_reject();
         }
 
         Ok(())
     }
 
-    pub async fn cancel_call(&self, user_id: Uuid, call_id: Uuid) -> Result<(), error::SystemError> {
-        let call = self
-            .call_repo
-            .find_by_id(call_id)
-            .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc gọi"))?;
+    pub async fn cancel_call(
+        &self,
+        user_id: Uuid,
+        call_id: Uuid,
+    ) -> Result<(), error::SystemError> {
+        let call =
+            self.call_repo.find_by_id(call_id).await?.ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::CallNotFound)
+            })?;
 
-        if call.initiator_id != user_id {
-            return Err(error::SystemError::forbidden(
-                "Chỉ người gọi mới có thể hủy cuộc gọi",
-            ));
+        ensure_call_initiator(
+            call.initiator_id,
+            user_id,
+            messages::i18n::Key::CallCancelInitiatorOnly,
+        )?;
+        ensure_call_status(
+            call.status,
+            CallStatus::Initiated,
+            messages::i18n::Key::CallCancelInvalidStatus,
+        )?;
+
+        if let Some(mut tx) = self.begin_tx().await? {
+            self.call_repo.end_call_with_tx(&mut tx, call_id, 0).await?;
+
+            self.call_repo
+                .create_call_message_with_tx(
+                    &mut tx,
+                    call.conversation_id,
+                    user_id,
+                    MessageType::CallCancel,
+                    Some(format!(
+                        "Cuộc gọi {} đã bị hủy",
+                        call_type_label(&call.call_type)
+                    )),
+                )
+                .await?;
+
+            tx.commit().await?;
+        } else {
+            self.call_repo.end_call(call_id, 0).await?;
+
+            self.call_repo
+                .create_call_message(
+                    call.conversation_id,
+                    user_id,
+                    MessageType::CallCancel,
+                    Some(format!(
+                        "Cuộc gọi {} đã bị hủy",
+                        call_type_label(&call.call_type)
+                    )),
+                )
+                .await?;
         }
-
-        if call.status != CallStatus::Initiated {
-            return Err(error::SystemError::bad_request(
-                "Không thể hủy cuộc gọi ở trạng thái hiện tại",
-            ));
-        }
-
-        self.call_repo.end_call(call_id, 0).await?;
-
-        self.call_repo
-            .create_call_message(
-                call.conversation_id,
-                user_id,
-                MessageType::CallCancel,
-                Some(format!(
-                    "Cuộc gọi {} đã bị hủy",
-                    call_type_label(&call.call_type)
-                )),
-            )
-            .await?;
 
         let member_ids = self
             .call_repo
@@ -219,26 +332,23 @@ where
             },
         );
 
+        self.metrics.inc_call_cancel();
+
         Ok(())
     }
 
     pub async fn end_call(&self, user_id: Uuid, call_id: Uuid) -> Result<(), error::SystemError> {
-        let call = self
-            .call_repo
-            .find_by_id(call_id)
-            .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc gọi"))?;
+        let call =
+            self.call_repo.find_by_id(call_id).await?.ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::CallNotFound)
+            })?;
 
         let is_member = self
             .call_repo
             .is_user_in_conversation(call.conversation_id, user_id)
             .await?;
 
-        if !is_member {
-            return Err(error::SystemError::forbidden(
-                "Bạn không thể kết thúc cuộc gọi này",
-            ));
-        }
+        ensure_call_member(is_member, messages::i18n::Key::CallEndNotAllowed)?;
 
         if call.status == CallStatus::Ended {
             return Ok(());
@@ -252,17 +362,38 @@ where
             })
             .unwrap_or(0);
 
-        self.call_repo.end_call(call_id, duration_seconds).await?;
-        self.participant_repo.mark_left(call_id, user_id).await?;
+        if let Some(mut tx) = self.begin_tx().await? {
+            self.call_repo
+                .end_call_with_tx(&mut tx, call_id, duration_seconds)
+                .await?;
+            self.participant_repo
+                .mark_left_with_tx(&mut tx, call_id, user_id)
+                .await?;
 
-        self.call_repo
-            .create_call_message(
-                call.conversation_id,
-                user_id,
-                MessageType::CallEnd,
-                Some(build_call_end_message(&call.call_type, duration_seconds)),
-            )
-            .await?;
+            self.call_repo
+                .create_call_message_with_tx(
+                    &mut tx,
+                    call.conversation_id,
+                    user_id,
+                    MessageType::CallEnd,
+                    Some(build_call_end_message(&call.call_type, duration_seconds)),
+                )
+                .await?;
+
+            tx.commit().await?;
+        } else {
+            self.call_repo.end_call(call_id, duration_seconds).await?;
+            self.participant_repo.mark_left(call_id, user_id).await?;
+
+            self.call_repo
+                .create_call_message(
+                    call.conversation_id,
+                    user_id,
+                    MessageType::CallEnd,
+                    Some(build_call_end_message(&call.call_type, duration_seconds)),
+                )
+                .await?;
+        }
 
         let member_ids = self
             .call_repo
@@ -278,6 +409,8 @@ where
             },
         );
 
+        self.metrics.inc_call_end();
+
         Ok(())
     }
 
@@ -288,7 +421,10 @@ where
         cursor: Option<DateTime<Utc>>,
     ) -> Result<CallHistoryResponse, error::SystemError> {
         let safe_limit = limit.clamp(1, 50);
-        let calls = self.call_repo.get_user_calls(user_id, safe_limit, cursor).await?;
+        let calls = self
+            .call_repo
+            .get_user_calls(user_id, safe_limit, cursor)
+            .await?;
 
         let next_cursor = calls
             .last()
@@ -332,4 +468,79 @@ fn format_duration(duration_seconds: i32) -> String {
     let minutes = duration_seconds / 60;
     let seconds = duration_seconds % 60;
     format!("{minutes:02}:{seconds:02}")
+}
+
+fn ensure_call_member(
+    is_member: bool,
+    error_key: messages::i18n::Key,
+) -> Result<(), error::SystemError> {
+    if is_member {
+        return Ok(());
+    }
+
+    Err(error::SystemError::forbidden_key(error_key))
+}
+
+fn ensure_call_status(
+    actual: CallStatus,
+    expected: CallStatus,
+    error_key: messages::i18n::Key,
+) -> Result<(), error::SystemError> {
+    if actual == expected {
+        return Ok(());
+    }
+
+    Err(error::SystemError::bad_request_key(error_key))
+}
+
+fn ensure_call_initiator(
+    initiator_id: Uuid,
+    user_id: Uuid,
+    error_key: messages::i18n::Key,
+) -> Result<(), error::SystemError> {
+    if initiator_id == user_id {
+        return Ok(());
+    }
+
+    Err(error::SystemError::forbidden_key(error_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_call_member_rejects_non_member() {
+        let result = ensure_call_member(false, messages::i18n::Key::CallEndNotAllowed);
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
+    }
+
+    #[test]
+    fn ensure_call_status_rejects_unexpected_state() {
+        let result = ensure_call_status(
+            CallStatus::Accepted,
+            CallStatus::Initiated,
+            messages::i18n::Key::CallNotAwaitingResponse,
+        );
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
+    }
+
+    #[test]
+    fn ensure_call_initiator_rejects_non_initiator() {
+        let result = ensure_call_initiator(
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            messages::i18n::Key::CallCancelInitiatorOnly,
+        );
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
+    }
 }

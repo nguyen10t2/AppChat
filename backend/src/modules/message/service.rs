@@ -9,19 +9,19 @@ use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use crate::api::error;
+use crate::api::{error, messages};
 use crate::configs::RedisCache;
-use crate::METRICS;
 use crate::modules::conversation::model::NewLastMessage;
 use crate::modules::conversation::repository::{
     ConversationRepository, LastMessageRepository, ParticipantRepository,
 };
-use crate::modules::conversation::schema::ConversationType;
+use crate::modules::conversation::schema::{ConversationEntity, ConversationType};
 use crate::modules::message::model::{InsertMessage, SendDirectMessagePayload};
 use crate::modules::message::repository::MessageRepository;
 use crate::modules::message::schema::{MessageEntity, MessageType};
 use crate::modules::websocket::message::{LastMessageInfo, SenderInfo, ServerMessage};
 use crate::modules::websocket::server::WebSocketServer;
+use crate::observability::AppMetrics;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MessageRoute {
@@ -44,6 +44,7 @@ where
     last_message_repo: Arc<L>,
     cache: Arc<RedisCache>,
     ws_server: Arc<WebSocketServer>,
+    metrics: Arc<AppMetrics>,
 }
 
 impl<M, C, P, L> MessageService<M, C, P, L>
@@ -62,6 +63,26 @@ where
         cache: Arc<RedisCache>,
         ws_server: Arc<WebSocketServer>,
     ) -> Self {
+        Self::with_dependencies_and_metrics(
+            conversation_repo,
+            message_repo,
+            participant_repo,
+            last_message_repo,
+            cache,
+            ws_server,
+            Arc::new(AppMetrics::default()),
+        )
+    }
+
+    pub fn with_dependencies_and_metrics(
+        conversation_repo: Arc<C>,
+        message_repo: Arc<M>,
+        participant_repo: Arc<P>,
+        last_message_repo: Arc<L>,
+        cache: Arc<RedisCache>,
+        ws_server: Arc<WebSocketServer>,
+        metrics: Arc<AppMetrics>,
+    ) -> Self {
         MessageService {
             conversation_repo,
             message_repo,
@@ -69,7 +90,16 @@ where
             last_message_repo,
             cache,
             ws_server,
+            metrics,
         }
+    }
+
+    async fn begin_tx(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, error::SystemError> {
+        self.conversation_repo
+            .get_pool()
+            .begin()
+            .await
+            .map_err(Into::into)
     }
 
     /// Gửi tin nhắn vào một conversation đã có sẵn (dùng cho WebSocket)
@@ -84,45 +114,18 @@ where
         conversation_id: Uuid,
         content: String,
     ) -> Result<MessageEntity, error::SystemError> {
-        let (conversation, is_member) = self
-            .conversation_repo
-            .get_conversation_and_check_membership(
-                &conversation_id,
-                &sender_id,
-                self.conversation_repo.get_pool(),
-            )
+        let conversation = self
+            .get_member_conversation_or_err(conversation_id, sender_id)
+            .await?;
+        let route = self
+            .resolve_route_for_conversation(&conversation, sender_id)
             .await?;
 
-        let conversation = conversation
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc trò chuyện"))?;
-
-        if !is_member {
-            return Err(error::SystemError::forbidden(
-                "Bạn không phải thành viên của cuộc trò chuyện này",
-            ));
-        }
-
-        let route = match conversation._type {
-            ConversationType::Group => MessageRoute::Group,
-            ConversationType::Direct => {
-                let participants = self
-                    .participant_repo
-                    .find_participants_by_conversation_id(
-                        &[conversation_id],
-                        self.conversation_repo.get_pool(),
-                    )
-                    .await?;
-
-                Self::resolve_message_route(
-                    &ConversationType::Direct,
-                    sender_id,
-                    participants.iter().map(|participant| participant.user_id),
-                )?
-            }
-        };
-
         match route {
-            MessageRoute::Group => self.send_group_message(sender_id, content, conversation_id).await,
+            MessageRoute::Group => {
+                self.send_group_message(sender_id, content, conversation_id)
+                    .await
+            }
             MessageRoute::Direct { recipient_id } => {
                 self.send_direct_message(sender_id, recipient_id, content, Some(conversation_id))
                     .await
@@ -145,8 +148,8 @@ where
                 .find(|user_id| *user_id != sender_id)
                 .map(|recipient_id| MessageRoute::Direct { recipient_id })
                 .ok_or_else(|| {
-                    error::SystemError::bad_request(
-                        "Không thể xác định người nhận trong cuộc trò chuyện trực tiếp",
+                    error::SystemError::bad_request_key(
+                        messages::i18n::Key::DirectRecipientResolveFailed,
                     )
                 }),
         }
@@ -188,27 +191,19 @@ where
         payload: SendDirectMessagePayload,
     ) -> Result<MessageEntity, error::SystemError> {
         let started_at = Instant::now();
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         let (message_type, content, file_url) =
             Self::normalize_message_input(payload.content, payload.message_type, payload.file_url)?;
 
-        let conversation = match payload.conversation_id {
-            Some(conv_id) => self
-                .conversation_repo
-                .find_by_id(&conv_id, self.conversation_repo.get_pool())
-                .await?
-                .ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc trò chuyện"))?,
-            None => self
-                .conversation_repo
-                .find_direct_between_users(&sender_id, &recipient_id, tx.as_mut())
-                .await?
-                .unwrap_or(
-                    self.conversation_repo
-                        .create_direct_conversation(&sender_id, &recipient_id, &mut tx)
-                        .await?,
-                ),
-        };
+        let conversation = self
+            .resolve_direct_conversation(
+                sender_id,
+                recipient_id,
+                payload.conversation_id,
+                &mut tx,
+            )
+            .await?;
 
         self.validate_reply_target(payload.reply_to_id, conversation.id, tx.as_mut())
             .await?;
@@ -271,7 +266,8 @@ where
         self.ws_server
             .send_to_users(&participant_ids, &server_message);
 
-        METRICS.record_message_send_latency(started_at.elapsed());
+        self.metrics
+            .record_message_send_latency(started_at.elapsed());
 
         Ok(message)
     }
@@ -289,15 +285,8 @@ where
         content: String,
         conversation_id: Uuid,
     ) -> Result<MessageEntity, error::SystemError> {
-        self.send_group_message_payload(
-            sender_id,
-            conversation_id,
-            Some(content),
-            None,
-            None,
-            None,
-        )
-        .await
+        self.send_group_message_payload(sender_id, conversation_id, Some(content), None, None, None)
+            .await
     }
 
     pub async fn send_group_message_payload(
@@ -310,7 +299,7 @@ where
         reply_to_id: Option<Uuid>,
     ) -> Result<MessageEntity, error::SystemError> {
         let started_at = Instant::now();
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         let (message_type, content, file_url) =
             Self::normalize_message_input(content, message_type, file_url)?;
@@ -376,7 +365,8 @@ where
         self.ws_server
             .send_to_users(&participant_ids, &server_message);
 
-        METRICS.record_message_send_latency(started_at.elapsed());
+        self.metrics
+            .record_message_send_latency(started_at.elapsed());
 
         Ok(message)
     }
@@ -389,19 +379,21 @@ where
         message_id: Uuid,
         user_id: Uuid,
     ) -> Result<(), error::SystemError> {
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         let message = self
             .message_repo
             .find_by_id(&message_id, tx.as_mut())
             .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy tin nhắn"))?;
+            .ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::MessageNotFound)
+            })?;
 
-        if message.sender_id != user_id {
-            return Err(error::SystemError::forbidden(
-                "Bạn chỉ có thể xóa tin nhắn của chính mình",
-            ));
-        }
+        Self::ensure_message_owner(
+            message.sender_id,
+            user_id,
+            messages::i18n::Key::DeleteOwnMessageOnly,
+        )?;
 
         let deleted = self
             .message_repo
@@ -409,8 +401,8 @@ where
             .await?;
 
         if !deleted {
-            return Err(error::SystemError::not_found(
-                "Không tìm thấy tin nhắn hoặc tin nhắn đã bị xóa",
+            return Err(error::SystemError::not_found_key(
+                messages::i18n::Key::MessageDeletedOrNotFound,
             ));
         }
 
@@ -442,25 +434,29 @@ where
         user_id: Uuid,
         new_content: String,
     ) -> Result<MessageEntity, error::SystemError> {
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         let message = self
             .message_repo
             .find_by_id(&message_id, tx.as_mut())
             .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy tin nhắn"))?;
+            .ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::MessageNotFound)
+            })?;
 
-        if message.sender_id != user_id {
-            return Err(error::SystemError::forbidden(
-                "Bạn chỉ có thể chỉnh sửa tin nhắn của chính mình",
-            ));
-        }
+        Self::ensure_message_owner(
+            message.sender_id,
+            user_id,
+            messages::i18n::Key::EditOwnMessageOnly,
+        )?;
 
         let edited_message = self
             .message_repo
             .edit_message(&message_id, &user_id, &new_content, tx.as_mut())
             .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy tin nhắn"))?;
+            .ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::MessageNotFound)
+            })?;
 
         let participants = self
             .participant_repo
@@ -562,15 +558,119 @@ where
             .message_repo
             .find_by_id(&reply_id, tx)
             .await?
-            .ok_or_else(|| error::SystemError::bad_request("Tin nhắn được trả lời không tồn tại"))?;
+            .ok_or_else(|| {
+                error::SystemError::bad_request_key(messages::i18n::Key::ReplyTargetNotFound)
+            })?;
 
         if reply_message.conversation_id != conversation_id {
-            return Err(error::SystemError::bad_request(
-                "Tin nhắn được trả lời không thuộc cuộc trò chuyện này",
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::ReplyTargetWrongConversation,
             ));
         }
 
         Ok(())
+    }
+
+    async fn get_member_conversation_or_err(
+        &self,
+        conversation_id: Uuid,
+        sender_id: Uuid,
+    ) -> Result<ConversationEntity, error::SystemError> {
+        let (conversation, is_member) = self
+            .conversation_repo
+            .get_conversation_and_check_membership(
+                &conversation_id,
+                &sender_id,
+                self.conversation_repo.get_pool(),
+            )
+            .await?;
+
+        let conversation = conversation.ok_or_else(|| {
+            error::SystemError::not_found_key(messages::i18n::Key::ConversationNotFound)
+        })?;
+
+        Self::ensure_conversation_member(is_member)?;
+
+        Ok(conversation)
+    }
+
+    async fn resolve_route_for_conversation(
+        &self,
+        conversation: &ConversationEntity,
+        sender_id: Uuid,
+    ) -> Result<MessageRoute, error::SystemError> {
+        match conversation._type {
+            ConversationType::Group => Ok(MessageRoute::Group),
+            ConversationType::Direct => {
+                let participants = self
+                    .participant_repo
+                    .find_participants_by_conversation_id(
+                        &[conversation.id],
+                        self.conversation_repo.get_pool(),
+                    )
+                    .await?;
+
+                Self::resolve_message_route(
+                    &ConversationType::Direct,
+                    sender_id,
+                    participants.iter().map(|participant| participant.user_id),
+                )
+            }
+        }
+    }
+
+    async fn resolve_direct_conversation(
+        &self,
+        sender_id: Uuid,
+        recipient_id: Uuid,
+        conversation_id: Option<Uuid>,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<ConversationEntity, error::SystemError> {
+        match conversation_id {
+            Some(conv_id) => self
+                .conversation_repo
+                .find_by_id(&conv_id, self.conversation_repo.get_pool())
+                .await?
+                .ok_or_else(|| {
+                    error::SystemError::not_found_key(messages::i18n::Key::ConversationNotFound)
+                }),
+            None => {
+                let existing = self
+                    .conversation_repo
+                    .find_direct_between_users(&sender_id, &recipient_id, tx.as_mut())
+                    .await?;
+
+                if let Some(conversation) = existing {
+                    Ok(conversation)
+                } else {
+                    self.conversation_repo
+                        .create_direct_conversation(&sender_id, &recipient_id, tx)
+                        .await
+                }
+            }
+        }
+    }
+
+    pub(crate) fn ensure_conversation_member(is_member: bool) -> Result<(), error::SystemError> {
+        if is_member {
+            return Ok(());
+        }
+
+        Err(error::SystemError::forbidden_key(
+            messages::i18n::Key::NotConversationMember,
+        ))
+    }
+
+    pub(crate) fn ensure_message_owner(
+        sender_id: Uuid,
+        user_id: Uuid,
+        error_key: messages::i18n::Key,
+    ) -> Result<(), error::SystemError> {
+        if sender_id == user_id {
+            return Ok(());
+        }
+
+        Err(error::SystemError::forbidden_key(error_key))
     }
 
     pub(crate) fn normalize_message_input(
@@ -586,8 +686,8 @@ where
             .filter(|value| !value.is_empty());
 
         if normalized_content.is_none() && normalized_file_url.is_none() {
-            return Err(error::SystemError::bad_request(
-                "Tin nhắn phải có nội dung hoặc tệp đính kèm",
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::MessageContentOrFileRequired,
             ));
         }
 
@@ -599,19 +699,21 @@ where
             }
         });
 
-        if matches!(resolved_type, MessageType::Image | MessageType::Video | MessageType::File)
-            && normalized_file_url.is_none()
+        if matches!(
+            resolved_type,
+            MessageType::Image | MessageType::Video | MessageType::File
+        ) && normalized_file_url.is_none()
         {
-            return Err(error::SystemError::bad_request(
-                "Loại tin nhắn này yêu cầu file_url",
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::MessageTypeRequiresFileUrl,
             ));
         }
 
         if matches!(resolved_type, MessageType::Text | MessageType::System)
             && normalized_content.is_none()
         {
-            return Err(error::SystemError::bad_request(
-                "Tin nhắn văn bản yêu cầu nội dung",
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::TextMessageRequiresContent,
             ));
         }
 

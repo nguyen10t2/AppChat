@@ -16,7 +16,7 @@ mod tests {
     use crate::modules::call::service::CallService;
     use crate::modules::message::schema::MessageType;
     use crate::modules::websocket::server::WebSocketServer;
-    use crate::tests::mock::database::MockDatabase;
+    use crate::tests::mock::lazy_mock_pool;
 
     #[derive(Default)]
     struct MockCallState {
@@ -38,7 +38,7 @@ mod tests {
     impl MockCallRepo {
         fn new(state: Arc<Mutex<MockCallState>>) -> Self {
             Self {
-                pool: MockDatabase::new().pool(),
+                pool: lazy_mock_pool(),
                 state,
             }
         }
@@ -46,6 +46,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl CallRepository for MockCallRepo {
+        fn supports_transactions(&self) -> bool {
+            false
+        }
+
         fn get_pool(&self) -> &sqlx::PgPool {
             &self.pool
         }
@@ -74,7 +78,21 @@ mod tests {
             Ok(call)
         }
 
-        async fn find_by_id(&self, call_id: Uuid) -> Result<Option<CallEntity>, error::SystemError> {
+        async fn create_call_with_tx(
+            &self,
+            _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+            initiator_id: Uuid,
+            conversation_id: Uuid,
+            call_type: CallType,
+        ) -> Result<CallEntity, error::SystemError> {
+            self.create_call(initiator_id, conversation_id, call_type)
+                .await
+        }
+
+        async fn find_by_id(
+            &self,
+            call_id: Uuid,
+        ) -> Result<Option<CallEntity>, error::SystemError> {
             let state = self.state.lock().expect("call state mutex poisoned");
             Ok(state.calls.get(&call_id).cloned())
         }
@@ -103,6 +121,15 @@ mod tests {
             Ok(None)
         }
 
+        async fn update_call_status_with_tx(
+            &self,
+            _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+            call_id: Uuid,
+            status: CallStatus,
+        ) -> Result<Option<CallEntity>, error::SystemError> {
+            self.update_call_status(call_id, status).await
+        }
+
         async fn end_call(
             &self,
             call_id: Uuid,
@@ -120,6 +147,15 @@ mod tests {
             }
 
             Ok(None)
+        }
+
+        async fn end_call_with_tx(
+            &self,
+            _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+            call_id: Uuid,
+            duration_seconds: i32,
+        ) -> Result<Option<CallEntity>, error::SystemError> {
+            self.end_call(call_id, duration_seconds).await
         }
 
         async fn get_conversation_member_ids(
@@ -171,6 +207,18 @@ mod tests {
                 .push((conversation_id, sender_id, message_type, content));
             Ok(())
         }
+
+        async fn create_call_message_with_tx(
+            &self,
+            _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+            conversation_id: Uuid,
+            sender_id: Uuid,
+            message_type: MessageType,
+            content: Option<String>,
+        ) -> Result<(), error::SystemError> {
+            self.create_call_message(conversation_id, sender_id, message_type, content)
+                .await
+        }
     }
 
     #[derive(Clone, Default)]
@@ -200,16 +248,30 @@ mod tests {
             })
         }
 
-        async fn mark_left(
+        async fn add_participant_with_tx(
             &self,
+            _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
             call_id: Uuid,
             user_id: Uuid,
-        ) -> Result<(), error::SystemError> {
+        ) -> Result<CallParticipantEntity, error::SystemError> {
+            self.add_participant(call_id, user_id).await
+        }
+
+        async fn mark_left(&self, call_id: Uuid, user_id: Uuid) -> Result<(), error::SystemError> {
             self.left
                 .lock()
                 .expect("participant mutex poisoned")
                 .push((call_id, user_id));
             Ok(())
+        }
+
+        async fn mark_left_with_tx(
+            &self,
+            _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+            call_id: Uuid,
+            user_id: Uuid,
+        ) -> Result<(), error::SystemError> {
+            self.mark_left(call_id, user_id).await
         }
 
         async fn is_call_participant(
@@ -257,7 +319,10 @@ mod tests {
         let receiver_id = Uuid::now_v7();
 
         let state = Arc::new(Mutex::new(MockCallState {
-            conversation_members: HashMap::from([(conversation_id, vec![initiator_id, receiver_id])]),
+            conversation_members: HashMap::from([(
+                conversation_id,
+                vec![initiator_id, receiver_id],
+            )]),
             ..Default::default()
         }));
 
@@ -284,16 +349,21 @@ mod tests {
         assert_eq!(response.status, CallStatus::Initiated);
         assert_ne!(response.call_id, Uuid::nil());
 
-        let added = participant_repo
-            .added
-            .lock()
-            .expect("participant mutex poisoned");
-        assert!(added.iter().any(|(call_id, user_id)| {
-            *call_id == response.call_id && *user_id == initiator_id
-        }));
+        {
+            let added = participant_repo
+                .added
+                .lock()
+                .expect("participant mutex poisoned");
+            assert!(added.iter().any(|(call_id, user_id)| {
+                *call_id == response.call_id && *user_id == initiator_id
+            }));
+        }
 
         let payload = recv_json(&mut receiver_rx).await;
-        assert_eq!(payload.get("type").and_then(Value::as_str), Some("call-request"));
+        assert_eq!(
+            payload.get("type").and_then(Value::as_str),
+            Some("call-request")
+        );
         assert_eq!(
             payload.get("call_id").and_then(Value::as_str),
             Some(response.call_id.to_string().as_str())
@@ -328,7 +398,10 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(result, Err(error::SystemError::Forbidden(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
     }
 
     #[tokio::test]
@@ -353,7 +426,10 @@ mod tests {
 
         let state = Arc::new(Mutex::new(MockCallState {
             calls: HashMap::from([(call_id, initial_call)]),
-            conversation_members: HashMap::from([(conversation_id, vec![initiator_id, responder_id])]),
+            conversation_members: HashMap::from([(
+                conversation_id,
+                vec![initiator_id, responder_id],
+            )]),
             ..Default::default()
         }));
 
@@ -361,7 +437,11 @@ mod tests {
         let ws_server = Arc::new(WebSocketServer::new());
         let mut initiator_rx = connect_ws_user(&ws_server, initiator_id);
 
-        let service = build_service(MockCallRepo::new(state.clone()), participant_repo.clone(), ws_server);
+        let service = build_service(
+            MockCallRepo::new(state.clone()),
+            participant_repo.clone(),
+            ws_server,
+        );
 
         service
             .respond_call(
@@ -375,23 +455,34 @@ mod tests {
             .await
             .expect("respond_call accept should succeed");
 
-        let state_lock = state.lock().expect("call state mutex poisoned");
-        assert!(state_lock
-            .status_updates
-            .iter()
-            .any(|(id, status)| *id == call_id && *status == CallStatus::Accepted));
-        drop(state_lock);
+        {
+            let state_lock = state.lock().expect("call state mutex poisoned");
+            assert!(
+                state_lock
+                    .status_updates
+                    .iter()
+                    .any(|(id, status)| *id == call_id && *status == CallStatus::Accepted)
+            );
+        }
 
-        let added = participant_repo
-            .added
-            .lock()
-            .expect("participant mutex poisoned");
-        assert!(added
-            .iter()
-            .any(|(saved_call_id, user_id)| *saved_call_id == call_id && *user_id == responder_id));
+        {
+            let added = participant_repo
+                .added
+                .lock()
+                .expect("participant mutex poisoned");
+            assert!(
+                added
+                    .iter()
+                    .any(|(saved_call_id, user_id)| *saved_call_id == call_id
+                        && *user_id == responder_id)
+            );
+        }
 
         let payload = recv_json(&mut initiator_rx).await;
-        assert_eq!(payload.get("type").and_then(Value::as_str), Some("call-accept"));
+        assert_eq!(
+            payload.get("type").and_then(Value::as_str),
+            Some("call-accept")
+        );
         assert_eq!(
             payload.get("call_id").and_then(Value::as_str),
             Some(call_id.to_string().as_str())
@@ -420,7 +511,10 @@ mod tests {
 
         let state = Arc::new(Mutex::new(MockCallState {
             calls: HashMap::from([(call_id, initial_call)]),
-            conversation_members: HashMap::from([(conversation_id, vec![initiator_id, other_user])]),
+            conversation_members: HashMap::from([(
+                conversation_id,
+                vec![initiator_id, other_user],
+            )]),
             ..Default::default()
         }));
 
@@ -432,7 +526,10 @@ mod tests {
 
         let result = service.cancel_call(other_user, call_id).await;
 
-        assert!(matches!(result, Err(error::SystemError::Forbidden(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
     }
 
     #[tokio::test]
@@ -484,15 +581,22 @@ mod tests {
                 *conversation == conversation_id
                     && *sender == initiator_id
                     && *message_type == MessageType::CallEnd
-                    && content.as_deref().is_some_and(|v| v.contains("Cuộc gọi video đã kết thúc"))
+                    && content
+                        .as_deref()
+                        .is_some_and(|v| v.contains("Cuộc gọi video đã kết thúc"))
             }
         ));
         drop(state_lock);
 
-        let left = participant_repo.left.lock().expect("participant mutex poisoned");
-        assert!(left
-            .iter()
-            .any(|(saved_call_id, user_id)| *saved_call_id == call_id && *user_id == initiator_id));
+        let left = participant_repo
+            .left
+            .lock()
+            .expect("participant mutex poisoned");
+        assert!(
+            left.iter()
+                .any(|(saved_call_id, user_id)| *saved_call_id == call_id
+                    && *user_id == initiator_id)
+        );
     }
 
     #[tokio::test]
@@ -539,7 +643,10 @@ mod tests {
 
         let state = Arc::new(Mutex::new(MockCallState {
             calls: HashMap::from([(call_id, initial_call)]),
-            conversation_members: HashMap::from([(conversation_id, vec![initiator_id, responder_id])]),
+            conversation_members: HashMap::from([(
+                conversation_id,
+                vec![initiator_id, responder_id],
+            )]),
             ..Default::default()
         }));
 
@@ -569,6 +676,137 @@ mod tests {
                     && *message_type == MessageType::CallReject
                     && content.as_deref() == Some("Cuộc gọi thoại đã bị từ chối: Bận")
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn respond_call_rejects_when_call_not_awaiting_response() {
+        let conversation_id = Uuid::now_v7();
+        let initiator_id = Uuid::now_v7();
+        let responder_id = Uuid::now_v7();
+        let call_id = Uuid::now_v7();
+
+        let initial_call = CallEntity {
+            id: call_id,
+            conversation_id,
+            initiator_id,
+            call_type: CallType::Audio,
+            status: CallStatus::Accepted,
+            started_at: Some(Utc::now()),
+            ended_at: None,
+            duration_seconds: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let state = Arc::new(Mutex::new(MockCallState {
+            calls: HashMap::from([(call_id, initial_call)]),
+            conversation_members: HashMap::from([(
+                conversation_id,
+                vec![initiator_id, responder_id],
+            )]),
+            ..Default::default()
+        }));
+
+        let service = build_service(
+            MockCallRepo::new(state),
+            MockParticipantRepo::default(),
+            Arc::new(WebSocketServer::new()),
+        );
+
+        let result = service
+            .respond_call(
+                responder_id,
+                call_id,
+                RespondCallRequest {
+                    accept: true,
+                    reason: None,
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn end_call_rejects_non_member() {
+        let conversation_id = Uuid::now_v7();
+        let initiator_id = Uuid::now_v7();
+        let outsider_id = Uuid::now_v7();
+        let call_id = Uuid::now_v7();
+
+        let initial_call = CallEntity {
+            id: call_id,
+            conversation_id,
+            initiator_id,
+            call_type: CallType::Video,
+            status: CallStatus::Accepted,
+            started_at: Some(Utc::now()),
+            ended_at: None,
+            duration_seconds: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let state = Arc::new(Mutex::new(MockCallState {
+            calls: HashMap::from([(call_id, initial_call)]),
+            conversation_members: HashMap::from([(conversation_id, vec![initiator_id])]),
+            ..Default::default()
+        }));
+
+        let service = build_service(
+            MockCallRepo::new(state),
+            MockParticipantRepo::default(),
+            Arc::new(WebSocketServer::new()),
+        );
+
+        let result = service.end_call(outsider_id, call_id).await;
+
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancel_call_rejects_invalid_status() {
+        let conversation_id = Uuid::now_v7();
+        let initiator_id = Uuid::now_v7();
+        let call_id = Uuid::now_v7();
+
+        let initial_call = CallEntity {
+            id: call_id,
+            conversation_id,
+            initiator_id,
+            call_type: CallType::Audio,
+            status: CallStatus::Accepted,
+            started_at: Some(Utc::now()),
+            ended_at: None,
+            duration_seconds: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let state = Arc::new(Mutex::new(MockCallState {
+            calls: HashMap::from([(call_id, initial_call)]),
+            conversation_members: HashMap::from([(conversation_id, vec![initiator_id])]),
+            ..Default::default()
+        }));
+
+        let service = build_service(
+            MockCallRepo::new(state),
+            MockParticipantRepo::default(),
+            Arc::new(WebSocketServer::new()),
+        );
+
+        let result = service.cancel_call(initiator_id, call_id).await;
+
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
         ));
     }
 }

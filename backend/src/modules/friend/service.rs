@@ -37,6 +37,14 @@ where
         }
     }
 
+    async fn begin_tx(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, error::SystemError> {
+        self.friend_repo
+            .get_pool()
+            .begin()
+            .await
+            .map_err(Into::into)
+    }
+
     /// Kiểm tra xem 2 user có phải là bạn bè hay không
     pub async fn is_friend(
         &self,
@@ -80,23 +88,15 @@ where
         receiver_id: Uuid,
         message: Option<String>,
     ) -> Result<FriendRequestEntity, error::SystemError> {
-        if receiver_id == sender_id {
-            return Err(error::SystemError::bad_request(
-                "Không thể tự gửi yêu cầu kết bạn cho chính mình",
-            ));
-        }
+        ensure_not_self_friend_request(sender_id, receiver_id)?;
 
         if self.user_repo.find_by_id(&receiver_id).await?.is_none() {
-            return Err(error::SystemError::not_found(
-                messages::error::FRIEND_RECEIVER_NOT_FOUND,
+            return Err(error::SystemError::not_found_key(
+                messages::i18n::Key::FriendReceiverNotFound,
             ));
         }
 
-        let (u1, u2) = if sender_id <= receiver_id {
-            (sender_id, receiver_id)
-        } else {
-            (receiver_id, sender_id)
-        };
+        let (u1, u2) = normalize_friend_pair(sender_id, receiver_id);
 
         let pool = self.friend_repo.get_pool();
 
@@ -107,12 +107,14 @@ where
         )?;
 
         if friends.is_some() {
-            return Err(error::SystemError::bad_request("Hai người đã là bạn bè"));
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::AlreadyFriends,
+            ));
         }
 
         if requests.is_some() {
-            return Err(error::SystemError::bad_request(
-                "Yêu cầu kết bạn đã tồn tại",
+            return Err(error::SystemError::bad_request_key(
+                messages::i18n::Key::FriendRequestAlreadyExists,
             ));
         }
 
@@ -137,22 +139,18 @@ where
             .find_friend_request_by_id(&request_id, pool)
             .await?
             .ok_or_else(|| {
-                error::SystemError::not_found(messages::error::FRIEND_REQUEST_NOT_FOUND)
+                error::SystemError::not_found_key(messages::i18n::Key::FriendRequestNotFound)
             })?;
 
-        if request.to_user_id != user_id {
-            return Err(error::SystemError::forbidden(
-                messages::error::FORBIDDEN_ACCEPT_FRIEND_REQUEST,
-            ));
-        }
+        ensure_friend_request_receiver(
+            request.to_user_id,
+            user_id,
+            messages::i18n::Key::ForbiddenAcceptFriendRequest,
+        )?;
 
-        let mut tx = pool.begin().await?;
+        let mut tx = self.begin_tx().await?;
 
-        let (u1, u2) = if request.from_user_id <= request.to_user_id {
-            (request.from_user_id, request.to_user_id)
-        } else {
-            (request.to_user_id, request.from_user_id)
-        };
+        let (u1, u2) = normalize_friend_pair(request.from_user_id, request.to_user_id);
 
         self.friend_repo
             .create_friendship(&u1, &u2, tx.as_mut())
@@ -168,7 +166,9 @@ where
             .user_repo
             .find_by_id(&request.from_user_id)
             .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy thông tin người dùng"))?;
+            .ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::UserInfoNotFound)
+            })?;
 
         Ok(FriendResponse::from(from_user))
     }
@@ -186,14 +186,14 @@ where
             .find_friend_request_by_id(&request_id, pool)
             .await?
             .ok_or_else(|| {
-                error::SystemError::not_found(messages::error::FRIEND_REQUEST_NOT_FOUND)
+                error::SystemError::not_found_key(messages::i18n::Key::FriendRequestNotFound)
             })?;
 
-        if request.to_user_id != user_id {
-            return Err(error::SystemError::forbidden(
-                messages::error::FORBIDDEN_DECLINE_FRIEND_REQUEST,
-            ));
-        }
+        ensure_friend_request_receiver(
+            request.to_user_id,
+            user_id,
+            messages::i18n::Key::ForbiddenDeclineFriendRequest,
+        )?;
 
         self.friend_repo
             .delete_friend_request(&request_id, pool)
@@ -218,5 +218,77 @@ where
         all.extend(requests_to);
         all.extend(requests_from);
         Ok(all)
+    }
+}
+
+fn ensure_not_self_friend_request(
+    sender_id: Uuid,
+    receiver_id: Uuid,
+) -> Result<(), error::SystemError> {
+    if sender_id != receiver_id {
+        return Ok(());
+    }
+
+    Err(error::SystemError::bad_request_key(
+        messages::i18n::Key::SelfFriendRequestNotAllowed,
+    ))
+}
+
+fn normalize_friend_pair(user_a: Uuid, user_b: Uuid) -> (Uuid, Uuid) {
+    if user_a <= user_b {
+        (user_a, user_b)
+    } else {
+        (user_b, user_a)
+    }
+}
+
+fn ensure_friend_request_receiver(
+    request_receiver_id: Uuid,
+    acting_user_id: Uuid,
+    error_key: messages::i18n::Key,
+) -> Result<(), error::SystemError> {
+    if request_receiver_id == acting_user_id {
+        return Ok(());
+    }
+
+    Err(error::SystemError::forbidden_key(error_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_not_self_friend_request_rejects_same_user() {
+        let user_id = Uuid::now_v7();
+        let result = ensure_not_self_friend_request(user_id, user_id);
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
+    }
+
+    #[test]
+    fn normalize_friend_pair_returns_sorted_ids() {
+        let high = Uuid::from_u128(2);
+        let low = Uuid::from_u128(1);
+
+        let (left, right) = normalize_friend_pair(high, low);
+        assert_eq!(left, low);
+        assert_eq!(right, high);
+    }
+
+    #[test]
+    fn ensure_friend_request_receiver_rejects_non_target_user() {
+        let result = ensure_friend_request_receiver(
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            messages::i18n::Key::ForbiddenDeclineFriendRequest,
+        );
+
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
     }
 }

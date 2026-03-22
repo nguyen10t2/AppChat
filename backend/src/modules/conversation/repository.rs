@@ -13,6 +13,7 @@ use crate::{
 
 #[async_trait::async_trait]
 pub trait ConversationRepository {
+    /// Returns Postgres pool for service-level transaction entry.
     fn get_pool(&self) -> &sqlx::Pool<sqlx::Postgres>;
 
     async fn find_by_id<'e, E>(
@@ -77,7 +78,7 @@ pub trait ConversationRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 
-    /// Update conversation's updated_at timestamp to current time
+    /// Updates conversation `updated_at` timestamp.
     async fn update_timestamp<'e, E>(
         &self,
         conversation_id: &Uuid,
@@ -86,7 +87,7 @@ pub trait ConversationRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 
-    /// Cập nhật thông tin nhóm (tên, avatar)
+    /// Updates group metadata (name, avatar).
     async fn update_group_info<'e, E>(
         &self,
         conversation_id: &Uuid,
@@ -97,7 +98,7 @@ pub trait ConversationRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 
-    /// Lấy user_id của người tạo nhóm
+    /// Returns creator user id of a group conversation.
     async fn get_group_creator<'e, E>(
         &self,
         conversation_id: &Uuid,
@@ -106,7 +107,7 @@ pub trait ConversationRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 
-    /// Thêm participant vào conversation (UPSERT – khôi phục nếu đã từng join)
+    /// Adds participant into conversation (upsert / revive if previously removed).
     async fn add_participant<'e, E>(
         &self,
         conversation_id: &Uuid,
@@ -116,7 +117,7 @@ pub trait ConversationRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 
-    /// Soft-delete participant (rời nhóm / bị kick)
+    /// Soft-deletes participant (leave group or kick member).
     async fn remove_participant<'e, E>(
         &self,
         conversation_id: &Uuid,
@@ -126,7 +127,7 @@ pub trait ConversationRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>;
 
-    /// Lấy danh sách member IDs của nhóm (active, chưa bị xóa)
+    /// Returns active member ids of a group conversation.
     async fn get_group_member_ids<'e, E>(
         &self,
         conversation_id: &Uuid,

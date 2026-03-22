@@ -108,7 +108,10 @@ mod tests {
         db.put_call(call_id, json!({"status": "initiated"}));
 
         assert_eq!(db.get_user(&user_id), Some(json!({"name": "alice"})));
-        assert_eq!(db.get_conversation(&conversation_id), Some(json!({"topic": "group"})));
+        assert_eq!(
+            db.get_conversation(&conversation_id),
+            Some(json!({"topic": "group"}))
+        );
         assert_eq!(db.get_call(&call_id), Some(json!({"status": "initiated"})));
     }
 }

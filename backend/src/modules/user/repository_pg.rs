@@ -2,12 +2,43 @@ use uuid::Uuid;
 
 use crate::{
     api::error,
+    api::messages,
     modules::user::{
         model::{InsertUser, UpdateUser},
         repository::UserRepository,
         schema::UserEntity,
     },
 };
+
+const SQL_FIND_USER_BY_ID: &str = "SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL";
+const SQL_FIND_USER_BY_USERNAME: &str =
+    "SELECT * FROM users WHERE lower(username) = lower($1) AND deleted_at IS NULL";
+const SQL_CREATE_USER: &str =
+    "INSERT INTO users (id, username, email, hash_password, display_name) VALUES ($1, $2, $3, $4, $5)";
+const SQL_UPDATE_USER: &str = r#"
+        UPDATE users
+        SET
+            username     = COALESCE($2, username),
+            email        = COALESCE($3, email),
+            display_name = COALESCE($4, display_name),
+            avatar_url   = CASE WHEN $5::boolean THEN $6 ELSE avatar_url END,
+            bio          = CASE WHEN $7::boolean THEN $8 ELSE bio END,
+            phone        = CASE WHEN $9::boolean THEN $10 ELSE phone END
+        WHERE id = $1
+        RETURNING *
+        "#;
+const SQL_SOFT_DELETE_USER: &str =
+    "UPDATE users SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL";
+const SQL_SEARCH_USERS: &str = r#"
+            SELECT * FROM users
+            WHERE deleted_at IS NULL
+            AND (
+                lower(username) LIKE lower($1)
+                OR lower(display_name) LIKE lower($1)
+            )
+            ORDER BY display_name
+            LIMIT $2
+            "#;
 
 #[derive(Clone)]
 pub struct UserRepositoryPg {
@@ -23,9 +54,7 @@ impl UserRepositoryPg {
 #[async_trait::async_trait]
 impl UserRepository for UserRepositoryPg {
     async fn find_by_id(&self, id: &Uuid) -> Result<Option<UserEntity>, error::SystemError> {
-        let user = sqlx::query_as::<_, UserEntity>(
-            "SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL",
-        )
+        let user = sqlx::query_as::<_, UserEntity>(SQL_FIND_USER_BY_ID)
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
@@ -36,9 +65,7 @@ impl UserRepository for UserRepositoryPg {
         &self,
         username: &str,
     ) -> Result<Option<UserEntity>, error::SystemError> {
-        let user = sqlx::query_as::<_, UserEntity>(
-            "SELECT * FROM users WHERE lower(username) = lower($1) AND deleted_at IS NULL",
-        )
+        let user = sqlx::query_as::<_, UserEntity>(SQL_FIND_USER_BY_USERNAME)
         .bind(username)
         .fetch_optional(&self.pool)
         .await?;
@@ -47,9 +74,7 @@ impl UserRepository for UserRepositoryPg {
 
     async fn create(&self, user: &InsertUser) -> Result<Uuid, error::SystemError> {
         let id = Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext));
-        sqlx::query(
-            "INSERT INTO users (id, username, email, hash_password, display_name) VALUES ($1, $2, $3, $4, $5)",
-        )
+        sqlx::query(SQL_CREATE_USER)
         .bind(id)
         .bind(&user.username)
         .bind(&user.email)
@@ -61,20 +86,7 @@ impl UserRepository for UserRepositoryPg {
     }
 
     async fn update(&self, id: &Uuid, user: &UpdateUser) -> Result<UserEntity, error::SystemError> {
-        let user = sqlx::query_as::<_, UserEntity>(
-            r#"
-        UPDATE users
-        SET
-            username     = COALESCE($2, username),
-            email        = COALESCE($3, email),
-            display_name = COALESCE($4, display_name),
-            avatar_url   = CASE WHEN $5::boolean THEN $6 ELSE avatar_url END,
-            bio          = CASE WHEN $7::boolean THEN $8 ELSE bio END,
-            phone        = CASE WHEN $9::boolean THEN $10 ELSE phone END
-        WHERE id = $1
-        RETURNING *
-        "#,
-        )
+        let user = sqlx::query_as::<_, UserEntity>(SQL_UPDATE_USER)
         .bind(id)
         .bind(&user.username) // $2: Option<String>
         .bind(&user.email) // $3: Option<String>
@@ -87,18 +99,17 @@ impl UserRepository for UserRepositoryPg {
         .bind(user.phone.as_ref().and_then(|v| v.as_ref())) // $10: Option<&String>
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| error::SystemError::not_found("Không tìm thấy người dùng"))?;
+        .ok_or_else(|| error::SystemError::not_found_key(messages::i18n::Key::UserNotFound))?;
 
         Ok(user)
     }
 
     async fn delete(&self, id: &Uuid) -> Result<bool, error::SystemError> {
-        let rows =
-            sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL")
-                .bind(id)
-                .execute(&self.pool)
-                .await?
-                .rows_affected();
+        let rows = sqlx::query(SQL_SOFT_DELETE_USER)
+            .bind(id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
 
         Ok(rows > 0)
     }
@@ -109,18 +120,7 @@ impl UserRepository for UserRepositoryPg {
         limit: i32,
     ) -> Result<Vec<UserEntity>, error::SystemError> {
         let search_pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
-        let users = sqlx::query_as::<_, UserEntity>(
-            r#"
-            SELECT * FROM users
-            WHERE deleted_at IS NULL
-            AND (
-                lower(username) LIKE lower($1)
-                OR lower(display_name) LIKE lower($1)
-            )
-            ORDER BY display_name
-            LIMIT $2
-            "#,
-        )
+        let users = sqlx::query_as::<_, UserEntity>(SQL_SEARCH_USERS)
         .bind(&search_pattern)
         .bind(limit)
         .fetch_all(&self.pool)

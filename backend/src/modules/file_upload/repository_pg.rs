@@ -5,6 +5,18 @@ use crate::{
     modules::file_upload::{model::NewFile, repository::FileRepository, schema::FileEntity},
 };
 
+const SQL_CREATE_FILE: &str = r#"
+            INSERT INTO files (filename, original_filename, mime_type, file_size, storage_path, uploaded_by)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
+            "#;
+const SQL_FIND_FILE_BY_ID: &str = r#"
+            SELECT * FROM files WHERE id = $1
+            "#;
+const SQL_DELETE_FILE_BY_ID: &str = r#"
+            DELETE FROM files WHERE id = $1
+            "#;
+
 #[derive(Clone)]
 pub struct FilePgRepository {
     pool: sqlx::PgPool,
@@ -26,13 +38,7 @@ impl FileRepository for FilePgRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        let entity = sqlx::query_as::<_, FileEntity>(
-            r#"
-            INSERT INTO files (filename, original_filename, mime_type, file_size, storage_path, uploaded_by)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING *
-            "#,
-        )
+        let entity = sqlx::query_as::<_, FileEntity>(SQL_CREATE_FILE)
         .bind(&file.filename)
         .bind(&file.original_filename)
         .bind(&file.mime_type)
@@ -46,11 +52,7 @@ impl FileRepository for FilePgRepository {
     }
 
     async fn find_by_id(&self, file_id: &Uuid) -> Result<Option<FileEntity>, error::SystemError> {
-        let file = sqlx::query_as::<_, FileEntity>(
-            r#"
-            SELECT * FROM files WHERE id = $1
-            "#,
-        )
+        let file = sqlx::query_as::<_, FileEntity>(SQL_FIND_FILE_BY_ID)
         .bind(file_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -62,11 +64,7 @@ impl FileRepository for FilePgRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        sqlx::query(
-            r#"
-            DELETE FROM files WHERE id = $1
-            "#,
-        )
+        sqlx::query(SQL_DELETE_FILE_BY_ID)
         .bind(file_id)
         .execute(tx)
         .await?;

@@ -12,9 +12,9 @@ use super::message::ClientMessage;
 use super::presence::PresenceService;
 use super::server::WebSocketServer;
 use super::session::{MessageSvc, WebSocketSessionImpl};
+use crate::app_state::AppState;
 use crate::modules::friend::repository_pg::FriendRepositoryPg;
 use crate::observability::{RequestContext, WsCloseReason};
-use crate::METRICS;
 use uuid::Uuid;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
@@ -28,6 +28,7 @@ pub async fn websocket_handler(
     message_service: web::Data<MessageSvc>,
     presence_service: web::Data<PresenceService>,
     friend_repo: web::Data<FriendRepositoryPg>,
+    app_state: web::Data<AppState>,
 ) -> Result<HttpResponse, Error> {
     tracing::debug!("WebSocket upgrade request từ {:?}", req.peer_addr());
 
@@ -54,6 +55,7 @@ pub async fn websocket_handler(
         Some(Arc::new(message_service.into_inner().as_ref().clone())),
         Some(Arc::new(presence_service.into_inner().as_ref().clone())),
         Some(Arc::new(friend_repo.into_inner().as_ref().clone())),
+        app_state.config.clone(),
     );
 
     let session_id = ws_session.id;
@@ -142,8 +144,8 @@ pub async fn websocket_handler(
             }
         };
 
-        METRICS.record_ws_close_reason(close_reason);
-        METRICS.inc_ws_disconnect();
+        app_state.metrics.record_ws_close_reason(close_reason);
+        app_state.metrics.inc_ws_disconnect();
 
         // Cleanup: Xóa trạng thái của session và đóng kết nối
         let _ = session.close(None).await;

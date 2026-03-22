@@ -36,7 +36,8 @@ impl Default for UploadConfig {
                 "video/mp4".to_string(),
                 "video/webm".to_string(),
                 "application/msword".to_string(),
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    .to_string(),
                 "application/zip".to_string(),
                 "application/x-rar-compressed".to_string(),
             ],

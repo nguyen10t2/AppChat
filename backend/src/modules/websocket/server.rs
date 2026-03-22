@@ -1,13 +1,15 @@
 use dashmap::{DashMap, DashSet};
 use rayon::prelude::*;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::message::ServerMessage;
-use crate::METRICS;
+use crate::observability::AppMetrics;
 
 const RECONNECT_WINDOW: Duration = Duration::from_secs(120);
+const PARALLEL_FANOUT_THRESHOLD: usize = 32;
 
 /// WebSocket server quản lý tất cả client sessions và conversation rooms
 /// Hoạt động như một shared state với DashMap cho truy cập an toàn từ nhiều luồng
@@ -27,17 +29,23 @@ pub struct WebSocketServer {
 
     /// Map: user_id -> last fully-disconnected instant
     last_disconnect_at: DashMap<Uuid, Instant>,
+    metrics: Arc<AppMetrics>,
 }
 
 impl WebSocketServer {
     /// Tạo WebSocket server mới với state rỗng
     pub fn new() -> Self {
+        Self::with_metrics(Arc::new(AppMetrics::default()))
+    }
+
+    pub fn with_metrics(metrics: Arc<AppMetrics>) -> Self {
         Self {
             sessions: DashMap::new(),
             users: DashMap::new(),
             rooms: DashMap::new(),
             user_rooms: DashMap::new(),
             last_disconnect_at: DashMap::new(),
+            metrics,
         }
     }
 
@@ -66,30 +74,15 @@ impl WebSocketServer {
 
     /// Gửi message tới tất cả sessions của một user (multi-device)
     pub fn send_to_user(&self, user_id: &Uuid, message: &ServerMessage) {
-        if let Some(sessions) = self.users.get(user_id) {
-            // Serialize once
-            if let Ok(json) = serde_json::to_string(message) {
-                for session_id in sessions.iter() {
-                    if let Some(tx) = self.sessions.get(&*session_id) {
-                        let _ = tx.send(json.clone());
-                    }
-                }
-            }
+        if let Ok(json) = serde_json::to_string(message) {
+            self.send_json_to_user(user_id, &json);
         }
     }
 
     /// Gửi message tới nhiều users
     pub fn send_to_users(&self, user_ids: &[Uuid], message: &ServerMessage) {
         if let Ok(json) = serde_json::to_string(message) {
-            user_ids.par_iter().for_each(|user_id| {
-                if let Some(sessions) = self.users.get(user_id) {
-                    for session_id in sessions.iter() {
-                        if let Some(tx) = self.sessions.get(&*session_id) {
-                            let _ = tx.send(json.clone());
-                        }
-                    }
-                }
-            });
+            self.broadcast_json_to_users(user_ids, None, &json);
         }
     }
 
@@ -103,46 +96,10 @@ impl WebSocketServer {
     pub fn disconnect(&self, session_id: Uuid) -> Option<Uuid> {
         tracing::debug!("WebSocket session disconnected: {}", session_id);
         self.sessions.remove(&session_id);
-
-        let mut user_fully_disconnected = None;
-
-        for user_entry in self.users.iter() {
-            let user_id = *user_entry.key();
-            let sessions = user_entry.value();
-
-            if sessions.remove(&session_id).is_some() {
-                tracing::debug!("Removed session {} from user {}", session_id, user_id);
-                if sessions.is_empty() {
-                    user_fully_disconnected = Some(user_id);
-                }
-                break;
-            }
-        }
+        let user_fully_disconnected = self.remove_session_from_user(session_id);
 
         if let Some(user_id) = user_fully_disconnected {
-            self.users.remove(&user_id);
-
-            if let Some((_, user_room_ids)) = self.user_rooms.remove(&user_id) {
-                let mut empty_rooms: Vec<Uuid> = Vec::new();
-                for room_id in user_room_ids.iter() {
-                    if let Some(room) = self.rooms.get(&*room_id) {
-                        room.remove(&user_id);
-                        if room.is_empty() {
-                            empty_rooms.push(*room_id);
-                        }
-                    }
-                }
-                for room_id in empty_rooms {
-                    self.rooms.remove(&room_id);
-                }
-            }
-
-            tracing::info!(
-                "User {} fully disconnected (no more sessions) and removed from all rooms",
-                user_id
-            );
-
-            self.last_disconnect_at.insert(user_id, Instant::now());
+            self.on_user_fully_disconnected(user_id);
             return Some(user_id);
         }
 
@@ -153,39 +110,99 @@ impl WebSocketServer {
     pub fn authenticate(&self, session_id: Uuid, user_id: Uuid) {
         tracing::info!("User {} authenticated on session {}", user_id, session_id);
 
-        if let Some((_, disconnected_at)) = self.last_disconnect_at.remove(&user_id)
-            && disconnected_at.elapsed() <= RECONNECT_WINDOW {
-                METRICS.inc_ws_reconnect();
+        self.record_recent_reconnect(user_id);
+        self.attach_session_to_user(session_id, user_id);
+    }
+
+    fn remove_session_from_user(&self, session_id: Uuid) -> Option<Uuid> {
+        for user_entry in self.users.iter() {
+            let user_id = *user_entry.key();
+            let sessions = user_entry.value();
+
+            if sessions.remove(&session_id).is_some() {
+                tracing::debug!("Removed session {} from user {}", session_id, user_id);
+                if sessions.is_empty() {
+                    return Some(user_id);
+                }
+                return None;
+            }
         }
 
+        None
+    }
+
+    fn on_user_fully_disconnected(&self, user_id: Uuid) {
+        self.users.remove(&user_id);
+        self.remove_user_from_all_rooms(user_id);
+
+        tracing::info!(
+            "User {} fully disconnected (no more sessions) and removed from all rooms",
+            user_id
+        );
+
+        self.last_disconnect_at.insert(user_id, Instant::now());
+    }
+
+    fn remove_user_from_all_rooms(&self, user_id: Uuid) {
+        if let Some((_, user_room_ids)) = self.user_rooms.remove(&user_id) {
+            for room_id in user_room_ids.iter() {
+                if self.remove_user_from_room(*room_id, user_id) {
+                    self.rooms.remove(&*room_id);
+                }
+            }
+        }
+    }
+
+    fn record_recent_reconnect(&self, user_id: Uuid) {
+        if let Some((_, disconnected_at)) = self.last_disconnect_at.remove(&user_id)
+            && disconnected_at.elapsed() <= RECONNECT_WINDOW
+        {
+            self.metrics.inc_ws_reconnect();
+        }
+    }
+
+    fn attach_session_to_user(&self, session_id: Uuid, user_id: Uuid) {
         let sessions = self.users.entry(user_id).or_default();
         sessions.insert(session_id);
     }
 
     /// Join conversation room
     pub fn join_room(&self, user_id: Uuid, conversation_id: Uuid) {
-        self.rooms
-            .entry(conversation_id)
-            .or_default()
-            .insert(user_id);
-        self.user_rooms
-            .entry(user_id)
-            .or_default()
-            .insert(conversation_id);
+        self.add_user_to_room(conversation_id, user_id);
+        self.add_room_to_user(conversation_id, user_id);
         tracing::debug!("User {} joined conversation {}", user_id, conversation_id);
     }
 
     /// Leave conversation room
     pub fn leave_room(&self, user_id: Uuid, conversation_id: Uuid) {
-        if let Some(room) = self.rooms.get(&conversation_id) {
-            room.remove(&user_id);
-            if room.is_empty() {
-                // Drop the reference early to avoid deadlock
-                drop(room);
-                self.rooms.remove(&conversation_id);
-            }
+        if self.remove_user_from_room(conversation_id, user_id) {
+            self.rooms.remove(&conversation_id);
         }
 
+        self.remove_room_from_user(conversation_id, user_id);
+    }
+
+    fn add_user_to_room(&self, conversation_id: Uuid, user_id: Uuid) {
+        self.rooms.entry(conversation_id).or_default().insert(user_id);
+    }
+
+    fn add_room_to_user(&self, conversation_id: Uuid, user_id: Uuid) {
+        self.user_rooms
+            .entry(user_id)
+            .or_default()
+            .insert(conversation_id);
+    }
+
+    fn remove_user_from_room(&self, conversation_id: Uuid, user_id: Uuid) -> bool {
+        if let Some(room) = self.rooms.get(&conversation_id) {
+            room.remove(&user_id);
+            return room.is_empty();
+        }
+
+        false
+    }
+
+    fn remove_room_from_user(&self, conversation_id: Uuid, user_id: Uuid) {
         if let Some(user_room) = self.user_rooms.get(&user_id) {
             user_room.remove(&conversation_id);
         }
@@ -199,22 +216,11 @@ impl WebSocketServer {
         skip_user_id: Option<Uuid>,
     ) {
         if let Some(room_users) = self.rooms.get(&conversation_id)
-            && let Ok(json) = serde_json::to_string(message) {
-                let user_ids: Vec<Uuid> = room_users.iter().map(|k| *k).collect();
-                user_ids.par_iter().for_each(|user_id| {
-                    if Some(*user_id) == skip_user_id {
-                        return;
-                    }
-
-                    if let Some(sessions) = self.users.get(user_id) {
-                        for session_id in sessions.iter() {
-                            if let Some(tx) = self.sessions.get(&*session_id) {
-                                let _ = tx.send(json.clone());
-                            }
-                        }
-                    }
-                });
-            }
+            && let Ok(json) = serde_json::to_string(message)
+        {
+            let user_ids: Vec<Uuid> = room_users.iter().map(|k| *k).collect();
+            self.broadcast_json_to_users(&user_ids, skip_user_id, &json);
+        }
     }
 
     /// Broadcast message tới tất cả sessions
@@ -222,9 +228,15 @@ impl WebSocketServer {
         if let Ok(json) = serde_json::to_string(message) {
             let endpoints: Vec<mpsc::UnboundedSender<String>> =
                 self.sessions.iter().map(|s| s.value().clone()).collect();
-            endpoints.par_iter().for_each(|tx| {
-                let _ = tx.send(json.clone());
-            });
+            if endpoints.len() >= PARALLEL_FANOUT_THRESHOLD {
+                endpoints.par_iter().for_each(|tx| {
+                    let _ = tx.send(json.clone());
+                });
+            } else {
+                for tx in &endpoints {
+                    let _ = tx.send(json.clone());
+                }
+            }
         }
     }
 
@@ -243,15 +255,7 @@ impl WebSocketServer {
         };
 
         if let Ok(json) = serde_json::to_string(&event) {
-            friend_ids.par_iter().for_each(|friend_id| {
-                if let Some(sessions) = self.users.get(friend_id) {
-                    for session_id in sessions.iter() {
-                        if let Some(tx) = self.sessions.get(&*session_id) {
-                            let _ = tx.send(json.clone());
-                        }
-                    }
-                }
-            });
+            self.broadcast_json_to_users(friend_ids, None, &json);
         }
     }
 
@@ -268,6 +272,37 @@ impl WebSocketServer {
                 user_ids: online_friend_ids,
             };
             self.send_to_user(user_id, &message);
+        }
+    }
+
+    fn send_json_to_user(&self, user_id: &Uuid, json: &str) {
+        if let Some(sessions) = self.users.get(user_id) {
+            for session_id in sessions.iter() {
+                if let Some(tx) = self.sessions.get(&*session_id) {
+                    let _ = tx.send(json.to_owned());
+                }
+            }
+        }
+    }
+
+    fn broadcast_json_to_users(&self, user_ids: &[Uuid], skip_user_id: Option<Uuid>, json: &str) {
+        if user_ids.len() >= PARALLEL_FANOUT_THRESHOLD {
+            user_ids.par_iter().for_each(|user_id| {
+                if Some(*user_id) == skip_user_id {
+                    return;
+                }
+
+                self.send_json_to_user(user_id, json);
+            });
+            return;
+        }
+
+        for user_id in user_ids {
+            if Some(*user_id) == skip_user_id {
+                continue;
+            }
+
+            self.send_json_to_user(user_id, json);
         }
     }
 }

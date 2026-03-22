@@ -7,11 +7,11 @@ use uuid::Uuid;
 
 use crate::modules::user::{model, service::UserService};
 use crate::modules::websocket::presence::{PresenceInfo, PresenceService};
-use crate::{ENV, middlewares::get_extensions};
 use crate::{
-    api::{error, success},
+    api::{error, messages, success},
     utils::{ValidatedJson, ValidatedQuery},
 };
+use crate::{app_state::AppState, middlewares::get_extensions};
 use crate::{
     modules::user::{model::SignUpResponse, repository_pg::UserRepositoryPg},
     utils::Claims,
@@ -51,8 +51,8 @@ pub async fn update_user(
     let auth_user_id = get_extensions::<Claims>(&req)?.sub;
     let target_id = user_id.into_inner();
     if auth_user_id != target_id {
-        return Err(error::Error::forbidden(
-            "Bạn chỉ có thể cập nhật thông tin của chính mình",
+        return Err(error::Error::forbidden_key(
+            messages::i18n::Key::UserUpdateSelfOnly,
         ));
     }
     user_service.update(target_id, user_data).await?;
@@ -69,8 +69,8 @@ pub async fn delete_user(
     let auth_user_id = get_extensions::<Claims>(&req)?.sub;
     let target_id = user_id.into_inner();
     if auth_user_id != target_id {
-        return Err(error::Error::forbidden(
-            "Bạn chỉ có thể xóa tài khoản của chính mình",
+        return Err(error::Error::forbidden_key(
+            messages::i18n::Key::UserDeleteSelfOnly,
         ));
     }
     user_service.delete(target_id).await?;
@@ -94,6 +94,7 @@ pub async fn sign_up(
 #[post("/signin")]
 pub async fn sign_in(
     user_service: web::Data<UserSvc>,
+    app_state: web::Data<AppState>,
     ValidatedJson(user_data): ValidatedJson<model::SignInModel>,
 ) -> Result<success::Success<model::SignInResponse>, error::Error> {
     let (access_token, refresh_token) = user_service.sign_in(user_data).await?;
@@ -102,8 +103,10 @@ pub async fn sign_in(
         .path("/")
         .http_only(true)
         .same_site(cookie::SameSite::Strict)
-        .secure(ENV.cookie_secure)
-        .max_age(time::Duration::seconds(ENV.refresh_token_expiration as i64))
+        .secure(app_state.config.cookie_secure)
+        .max_age(time::Duration::seconds(
+            app_state.config.refresh_token_expiration as i64,
+        ))
         .finish();
 
     Ok(success::Success::ok(Some(response))
@@ -115,6 +118,7 @@ pub async fn sign_in(
 #[get("/signout")]
 pub async fn sign_out(
     user_service: web::Data<UserSvc>,
+    app_state: web::Data<AppState>,
     req: HttpRequest,
 ) -> Result<success::Success<()>, error::Error> {
     let refresh_token = req.cookie("refresh_token").map(|c| c.value().to_string());
@@ -123,7 +127,7 @@ pub async fn sign_out(
         .path("/")
         .http_only(true)
         .same_site(cookie::SameSite::Strict)
-        .secure(ENV.cookie_secure)
+        .secure(app_state.config.cookie_secure)
         .max_age(time::Duration::seconds(0))
         .expires(time::OffsetDateTime::UNIX_EPOCH)
         .finish();
@@ -135,6 +139,7 @@ pub async fn sign_out(
 #[post("/refresh")]
 pub async fn refresh(
     user_service: web::Data<UserSvc>,
+    app_state: web::Data<AppState>,
     req: HttpRequest,
 ) -> Result<success::Success<model::SignInResponse>, error::Error> {
     let refresh_token = req.cookie("refresh_token").map(|c| c.value().to_string());
@@ -144,8 +149,10 @@ pub async fn refresh(
         .path("/")
         .http_only(true)
         .same_site(cookie::SameSite::Strict)
-        .secure(ENV.cookie_secure)
-        .max_age(time::Duration::seconds(ENV.refresh_token_expiration as i64))
+        .secure(app_state.config.cookie_secure)
+        .max_age(time::Duration::seconds(
+            app_state.config.refresh_token_expiration as i64,
+        ))
         .finish();
     Ok(success::Success::ok(Some(response))
         .message("Làm mới phiên truy cập thành công")
@@ -181,8 +188,8 @@ pub async fn get_presence(
 
     // Giới hạn số lượng users per request để tránh abuse
     if body.user_ids.len() > 200 {
-        return Err(error::Error::bad_request(
-            "Tối đa 200 user IDs cho mỗi lần gọi API",
+        return Err(error::Error::bad_request_key(
+            messages::i18n::Key::PresenceMaxUsersExceeded,
         ));
     }
 

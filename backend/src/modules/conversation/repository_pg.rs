@@ -13,6 +13,30 @@ use crate::modules::conversation::schema::{
 };
 use crate::{api::error, modules::conversation::schema::ConversationEntity};
 
+const SQL_FIND_CONVERSATION_BY_ID: &str = "SELECT * FROM conversations WHERE id = $1";
+const SQL_FIND_GROUP_CREATOR: &str =
+    "SELECT created_by FROM group_conversations WHERE conversation_id = $1";
+const SQL_UPDATE_CONVERSATION_TIMESTAMP: &str = r#"
+            UPDATE conversations
+            SET updated_at = NOW()
+            WHERE id = $1
+            "#;
+const SQL_ADD_PARTICIPANT_UPSERT: &str = r#"
+            INSERT INTO participants (conversation_id, user_id, unread_count, joined_at)
+            VALUES ($1, $2, 0, NOW())
+            ON CONFLICT (conversation_id, user_id)
+            DO UPDATE SET deleted_at = NULL, joined_at = NOW(), unread_count = 0
+            "#;
+const SQL_REMOVE_PARTICIPANT_SOFT_DELETE: &str = r#"
+            UPDATE participants
+            SET deleted_at = NOW()
+            WHERE conversation_id = $1 AND user_id = $2 AND deleted_at IS NULL
+            "#;
+const SQL_GET_GROUP_MEMBER_IDS: &str = r#"
+            SELECT user_id FROM participants
+            WHERE conversation_id = $1 AND deleted_at IS NULL
+            "#;
+
 #[derive(Clone)]
 pub struct ConversationPgRepository {
     pool: sqlx::PgPool,
@@ -42,11 +66,10 @@ impl ConversationRepository for ConversationPgRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        let conversation =
-            sqlx::query_as::<_, ConversationEntity>("SELECT * FROM conversations WHERE id = $1")
-                .bind(conversation_id)
-                .fetch_optional(tx)
-                .await?;
+        let conversation = sqlx::query_as::<_, ConversationEntity>(SQL_FIND_CONVERSATION_BY_ID)
+            .bind(conversation_id)
+            .fetch_optional(tx)
+            .await?;
 
         Ok(conversation)
     }
@@ -402,16 +425,10 @@ impl ConversationRepository for ConversationPgRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        sqlx::query(
-            r#"
-            UPDATE conversations
-            SET updated_at = NOW()
-            WHERE id = $1
-            "#,
-        )
-        .bind(conversation_id)
-        .execute(tx)
-        .await?;
+        sqlx::query(SQL_UPDATE_CONVERSATION_TIMESTAMP)
+            .bind(conversation_id)
+            .execute(tx)
+            .await?;
 
         Ok(())
     }
@@ -464,12 +481,10 @@ impl ConversationRepository for ConversationPgRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        let row = sqlx::query_scalar::<_, Uuid>(
-            "SELECT created_by FROM group_conversations WHERE conversation_id = $1",
-        )
-        .bind(conversation_id)
-        .fetch_optional(tx)
-        .await?;
+        let row = sqlx::query_scalar::<_, Uuid>(SQL_FIND_GROUP_CREATOR)
+            .bind(conversation_id)
+            .fetch_optional(tx)
+            .await?;
         Ok(row)
     }
 
@@ -482,18 +497,11 @@ impl ConversationRepository for ConversationPgRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        sqlx::query(
-            r#"
-            INSERT INTO participants (conversation_id, user_id, unread_count, joined_at)
-            VALUES ($1, $2, 0, NOW())
-            ON CONFLICT (conversation_id, user_id)
-            DO UPDATE SET deleted_at = NULL, joined_at = NOW(), unread_count = 0
-            "#,
-        )
-        .bind(conversation_id)
-        .bind(user_id)
-        .execute(tx)
-        .await?;
+        sqlx::query(SQL_ADD_PARTICIPANT_UPSERT)
+            .bind(conversation_id)
+            .bind(user_id)
+            .execute(tx)
+            .await?;
         Ok(())
     }
 
@@ -506,17 +514,11 @@ impl ConversationRepository for ConversationPgRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        sqlx::query(
-            r#"
-            UPDATE participants
-            SET deleted_at = NOW()
-            WHERE conversation_id = $1 AND user_id = $2 AND deleted_at IS NULL
-            "#,
-        )
-        .bind(conversation_id)
-        .bind(user_id)
-        .execute(tx)
-        .await?;
+        sqlx::query(SQL_REMOVE_PARTICIPANT_SOFT_DELETE)
+            .bind(conversation_id)
+            .bind(user_id)
+            .execute(tx)
+            .await?;
         Ok(())
     }
 
@@ -528,19 +530,13 @@ impl ConversationRepository for ConversationPgRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        let ids = sqlx::query_scalar::<_, Uuid>(
-            r#"
-            SELECT user_id FROM participants
-            WHERE conversation_id = $1 AND deleted_at IS NULL
-            "#,
-        )
-        .bind(conversation_id)
-        .fetch_all(tx)
-        .await?;
+        let ids = sqlx::query_scalar::<_, Uuid>(SQL_GET_GROUP_MEMBER_IDS)
+            .bind(conversation_id)
+            .fetch_all(tx)
+            .await?;
         Ok(ids)
     }
 }
-
 
 #[derive(Clone, Default)]
 pub struct ParticipantPgRepository {}

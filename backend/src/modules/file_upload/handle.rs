@@ -4,7 +4,7 @@ use futures_util::TryStreamExt;
 use uuid::Uuid;
 
 use crate::api::success::Success;
-use crate::api::{error, success};
+use crate::api::{error, messages, success};
 use crate::modules::file_upload::schema::FileUploadResponse;
 use crate::modules::file_upload::service::FileUploadService;
 
@@ -25,13 +25,13 @@ where
         .await
         .map_err(|_| error::Error::InternalServer)?
     {
-        let content_disposition = field
-            .content_disposition()
-            .ok_or_else(|| error::Error::bad_request("Thiếu thông tin tệp đính kèm"))?;
+        let content_disposition = field.content_disposition().ok_or_else(|| {
+            error::Error::bad_request_key(messages::i18n::Key::MissingFileAttachment)
+        })?;
 
         let filename = content_disposition
             .get_filename()
-            .ok_or_else(|| error::Error::bad_request("Thiếu tên tệp"))?
+            .ok_or_else(|| error::Error::bad_request_key(messages::i18n::Key::MissingFileName))?
             .to_string();
 
         // Detect MIME type
@@ -58,7 +58,9 @@ where
         return Ok(Success::ok(Some(result)).message("Tải tệp lên thành công"));
     }
 
-    Err(error::Error::bad_request("Không tìm thấy tệp trong yêu cầu"))
+    Err(error::Error::bad_request_key(
+        messages::i18n::Key::MissingFileAttachment,
+    ))
 }
 
 /// Get file metadata handler
@@ -73,7 +75,9 @@ where
 
     match service.get_file(&file_id).await {
         Ok(Some(file)) => Ok(Success::ok(Some(file))),
-        Ok(None) => Err(error::Error::not_found("Không tìm thấy tệp")),
+        Ok(None) => Err(error::Error::not_found_key(
+            messages::i18n::Key::FileNotFound,
+        )),
         Err(e) => Err(error::Error::from(e)),
     }
 }
@@ -95,17 +99,18 @@ where
         Ok(Some(file)) => {
             // Check if user owns the file
             if file.uploaded_by != user_id {
-                return Err(error::Error::forbidden(
-                    "Bạn không có quyền xóa tệp này",
+                return Err(error::Error::forbidden_key(
+                    messages::i18n::Key::FileDeleteForbidden,
                 ));
             }
 
             // Delete file
             service.delete_file(&file_id).await?;
-            Ok(Success::ok(Some("Xóa tệp thành công".to_string()))
-                .message("Xóa tệp thành công"))
+            Ok(Success::ok(Some("Xóa tệp thành công".to_string())).message("Xóa tệp thành công"))
         }
-        Ok(None) => Err(error::Error::not_found("Không tìm thấy tệp")),
+        Ok(None) => Err(error::Error::not_found_key(
+            messages::i18n::Key::FileNotFound,
+        )),
         Err(e) => Err(error::Error::from(e)),
     }
 }

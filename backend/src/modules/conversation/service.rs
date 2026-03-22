@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
 use crate::{
-    api::error,
+    api::{error, messages},
     modules::{
         conversation::{
             model::{ConversationDetail, ParticipantDetailWithConversation, ParticipantRow},
@@ -20,6 +20,7 @@ use crate::{
             server::WebSocketServer,
         },
     },
+    observability::AppMetrics,
 };
 
 /// ConversationService với generic repositories để dễ testing và decoupling
@@ -34,6 +35,7 @@ where
     participant_repo: Arc<P>,
     message_repo: Arc<L>,
     ws_server: Arc<WebSocketServer>,
+    metrics: Arc<AppMetrics>,
 }
 
 impl<R, P, L> ConversationService<R, P, L>
@@ -49,12 +51,37 @@ where
         message_repo: Arc<L>,
         ws_server: Arc<WebSocketServer>,
     ) -> Self {
+        Self::with_dependencies_and_metrics(
+            conversation_repo,
+            participant_repo,
+            message_repo,
+            ws_server,
+            Arc::new(AppMetrics::default()),
+        )
+    }
+
+    pub fn with_dependencies_and_metrics(
+        conversation_repo: Arc<R>,
+        participant_repo: Arc<P>,
+        message_repo: Arc<L>,
+        ws_server: Arc<WebSocketServer>,
+        metrics: Arc<AppMetrics>,
+    ) -> Self {
         ConversationService {
             conversation_repo,
             participant_repo,
             message_repo,
             ws_server,
+            metrics,
         }
+    }
+
+    async fn begin_tx(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, error::SystemError> {
+        self.conversation_repo
+            .get_pool()
+            .begin()
+            .await
+            .map_err(Into::into)
     }
 
     /// Lấy conversation theo ID
@@ -66,7 +93,9 @@ where
             .conversation_repo
             .find_by_id(&conversation_id, self.conversation_repo.get_pool())
             .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc trò chuyện"))?;
+            .ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::ConversationNotFound)
+            })?;
 
         Ok(conversation)
     }
@@ -82,10 +111,11 @@ where
         member_ids: Vec<Uuid>,
         user_id: Uuid,
     ) -> Result<Option<ConversationDetail>, error::SystemError> {
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
+        let mut did_create_conversation = false;
 
         let participant = member_ids.first().ok_or_else(|| {
-            error::SystemError::bad_request("Cần có ít nhất một thành viên để tạo cuộc trò chuyện")
+            error::SystemError::bad_request_key(messages::i18n::Key::ConversationMemberRequired)
         })?;
 
         let conversation = match _type {
@@ -97,6 +127,7 @@ where
                 {
                     conv
                 } else {
+                    did_create_conversation = true;
                     self.conversation_repo
                         .create_direct_conversation(&user_id, participant, &mut tx)
                         .await?
@@ -108,6 +139,7 @@ where
                 if !all_members.contains(&user_id) {
                     all_members.push(user_id);
                 }
+                did_create_conversation = true;
                 self.conversation_repo
                     .create_group_conversation(&name, &all_members, &user_id, &mut tx)
                     .await?
@@ -145,6 +177,10 @@ where
                 // Direct message không cần broadcast khi tạo mới
                 // Sẽ broadcast khi có message đầu tiên
             }
+        }
+
+        if did_create_conversation {
+            self.metrics.inc_conversation_create();
         }
 
         Ok(conversation_detail)
@@ -221,8 +257,8 @@ where
             Some(c) => Some(
                 chrono::DateTime::parse_from_rfc3339(&c)
                     .map_err(|_| {
-                        error::SystemError::bad_request(
-                            "Định dạng danh sách phân trang (cursor) không hợp lệ",
+                        error::SystemError::bad_request_key(
+                            messages::i18n::Key::InvalidPaginationCursor,
                         )
                     })?
                     .with_timezone(&chrono::Utc),
@@ -292,7 +328,7 @@ where
         conversation_id: Uuid,
         user_id: Uuid,
     ) -> Result<(), error::SystemError> {
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         // Verify user is a participant of the conversation
         let (_, is_member) = self
@@ -300,11 +336,7 @@ where
             .get_conversation_and_check_membership(&conversation_id, &user_id, tx.as_mut())
             .await?;
 
-        if !is_member {
-            return Err(error::SystemError::forbidden(
-                "Người dùng không phải là thành viên của cuộc trò chuyện này",
-            ));
-        }
+        ensure_conversation_member(is_member)?;
 
         // Get last message of the conversation
         let last_message = self
@@ -376,6 +408,8 @@ where
                 &ServerMessage::read_message(conversation_update, last_message_info),
                 None,
             );
+
+            self.metrics.inc_conversation_mark_seen();
         }
         Ok(())
     }
@@ -388,7 +422,7 @@ where
         name: Option<String>,
         avatar_url: Option<Option<String>>,
     ) -> Result<(), error::SystemError> {
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         // 1. Kiểm tra conversation-type và membership
         let (conv, is_member) = self
@@ -396,24 +430,25 @@ where
             .get_conversation_and_check_membership(&conversation_id, &user_id, tx.as_mut())
             .await?;
 
-        let conv = conv.ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc trò chuyện"))?;
-        if conv._type != ConversationType::Group {
-            return Err(error::SystemError::bad_request("Chỉ có thể cập nhật thông tin cho nhóm"));
-        }
-        if !is_member {
-            return Err(error::SystemError::forbidden("Bạn không phải thành viên của nhóm này"));
-        }
+        let conv = conv.ok_or_else(|| {
+            error::SystemError::not_found_key(messages::i18n::Key::ConversationNotFound)
+        })?;
+        ensure_group_conversation(
+            conv._type,
+            messages::i18n::Key::GroupUpdateOnlyForGroup,
+        )?;
+        ensure_conversation_member(is_member)?;
 
         // 2. Kiểm tra quyền trưởng nhóm (creator)
         let creator_id = self
             .conversation_repo
             .get_group_creator(&conversation_id, tx.as_mut())
             .await?
-            .ok_or_else(|| error::SystemError::internal_error("Lỗi dữ liệu nhóm: thiếu thông tin người tạo"))?;
+            .ok_or_else(|| {
+                error::SystemError::internal_error_key(messages::i18n::Key::GroupCreatorMissing)
+            })?;
 
-        if creator_id != user_id {
-            return Err(error::SystemError::forbidden("Chỉ trưởng nhóm mới có quyền thay đổi thông tin"));
-        }
+        ensure_group_owner(creator_id, user_id, messages::i18n::Key::GroupOwnerOnlyUpdate)?;
 
         // 3. Thực hiện cập nhật
         self.conversation_repo
@@ -425,7 +460,9 @@ where
             )
             .await?;
 
-        self.conversation_repo.update_timestamp(&conversation_id, tx.as_mut()).await?;
+        self.conversation_repo
+            .update_timestamp(&conversation_id, tx.as_mut())
+            .await?;
 
         tx.commit().await?;
 
@@ -440,6 +477,8 @@ where
             None,
         );
 
+        self.metrics.inc_conversation_group_update();
+
         Ok(())
     }
 
@@ -452,37 +491,45 @@ where
         is_friend: bool,
     ) -> Result<(), error::SystemError> {
         if !is_friend {
-            return Err(error::SystemError::forbidden("Chỉ có thể thêm bạn bè vào nhóm"));
+            return Err(error::SystemError::forbidden_key(
+                messages::i18n::Key::GroupAddOnlyFriends,
+            ));
         }
 
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         // 1. Kiểm tra quyền trưởng nhóm
         let creator_id = self
             .conversation_repo
             .get_group_creator(&conversation_id, tx.as_mut())
             .await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy nhóm hoặc không phải là nhóm"))?;
+            .ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::GroupNotFoundOrInvalid)
+            })?;
 
-        if creator_id != requester_id {
-            return Err(error::SystemError::forbidden("Chỉ trưởng nhóm mới có quyền thêm thành viên"));
-        }
+        ensure_group_owner(
+            creator_id,
+            requester_id,
+            messages::i18n::Key::GroupOwnerOnlyAdd,
+        )?;
 
         // 2. Thêm thành viên (UPSERT)
         self.conversation_repo
             .add_participant(&conversation_id, &new_user_id, tx.as_mut())
             .await?;
 
-        self.conversation_repo.update_timestamp(&conversation_id, tx.as_mut()).await?;
+        self.conversation_repo
+            .update_timestamp(&conversation_id, tx.as_mut())
+            .await?;
 
         // Lấy thông tin user mới để broadcast
         let user_info = sqlx::query_as::<_, ParticipantRow>(
-            "SELECT display_name, avatar_url FROM users WHERE id = $1"
+            "SELECT display_name, avatar_url FROM users WHERE id = $1",
         )
         .bind(new_user_id)
         .fetch_one(tx.as_mut())
         .await
-        .map_err(|_| error::SystemError::not_found("Không tìm thấy người dùng được thêm"))?;
+        .map_err(|_| error::SystemError::not_found_key(messages::i18n::Key::AddedUserNotFound))?;
 
         tx.commit().await?;
 
@@ -519,6 +566,8 @@ where
             None,
         );
 
+        self.metrics.inc_conversation_member_add();
+
         Ok(())
     }
 
@@ -529,37 +578,38 @@ where
         requester_id: Uuid,
         target_user_id: Uuid,
     ) -> Result<(), error::SystemError> {
-        let mut tx = self.conversation_repo.get_pool().begin().await?;
+        let mut tx = self.begin_tx().await?;
 
         // 1. Kiểm tra conversation-type
-        let conv = self.conversation_repo.find_by_id(&conversation_id, tx.as_mut()).await?
-            .ok_or_else(|| error::SystemError::not_found("Không tìm thấy cuộc trò chuyện"))?;
+        let conv = self
+            .conversation_repo
+            .find_by_id(&conversation_id, tx.as_mut())
+            .await?
+            .ok_or_else(|| {
+                error::SystemError::not_found_key(messages::i18n::Key::ConversationNotFound)
+            })?;
 
-        if conv._type != ConversationType::Group {
-            return Err(error::SystemError::bad_request("Chỉ có thể rời nhóm hoặc xóa thành viên khỏi nhóm"));
-        }
+        ensure_group_conversation(conv._type, messages::i18n::Key::GroupRemoveOnlyGroup)?;
 
         // 2. Kiểm tra quyền
         let creator_id = self
             .conversation_repo
             .get_group_creator(&conversation_id, tx.as_mut())
             .await?
-            .ok_or_else(|| error::SystemError::internal_error("Lỗi dữ liệu nhóm"))?;
+            .ok_or_else(|| {
+                error::SystemError::internal_error_key(messages::i18n::Key::GroupDataError)
+            })?;
 
-        if requester_id != target_user_id && requester_id != creator_id {
-            return Err(error::SystemError::forbidden("Bạn không có quyền thực hiện hành động này"));
-        }
-
-        if target_user_id == creator_id {
-            return Err(error::SystemError::bad_request("Không thể xóa trưởng nhóm."));
-        }
+        ensure_member_removal_permission(requester_id, target_user_id, creator_id)?;
 
         // 3. Soft delete participant
         self.conversation_repo
             .remove_participant(&conversation_id, &target_user_id, tx.as_mut())
             .await?;
 
-        self.conversation_repo.update_timestamp(&conversation_id, tx.as_mut()).await?;
+        self.conversation_repo
+            .update_timestamp(&conversation_id, tx.as_mut())
+            .await?;
 
         tx.commit().await?;
 
@@ -573,6 +623,124 @@ where
             None,
         );
 
+        self.metrics.inc_conversation_member_remove();
+
         Ok(())
+    }
+}
+
+fn ensure_conversation_member(is_member: bool) -> Result<(), error::SystemError> {
+    if is_member {
+        return Ok(());
+    }
+
+    Err(error::SystemError::forbidden_key(
+        messages::i18n::Key::NotConversationMember,
+    ))
+}
+
+fn ensure_group_conversation(
+    conversation_type: ConversationType,
+    error_key: messages::i18n::Key,
+) -> Result<(), error::SystemError> {
+    if conversation_type == ConversationType::Group {
+        return Ok(());
+    }
+
+    Err(error::SystemError::bad_request_key(error_key))
+}
+
+fn ensure_group_owner(
+    creator_id: Uuid,
+    requester_id: Uuid,
+    error_key: messages::i18n::Key,
+) -> Result<(), error::SystemError> {
+    if creator_id == requester_id {
+        return Ok(());
+    }
+
+    Err(error::SystemError::forbidden_key(error_key))
+}
+
+fn ensure_member_removal_permission(
+    requester_id: Uuid,
+    target_user_id: Uuid,
+    creator_id: Uuid,
+) -> Result<(), error::SystemError> {
+    if requester_id != target_user_id && requester_id != creator_id {
+        return Err(error::SystemError::forbidden_key(
+            messages::i18n::Key::AccessDenied,
+        ));
+    }
+
+    if target_user_id == creator_id {
+        return Err(error::SystemError::bad_request_key(
+            messages::i18n::Key::CannotRemoveGroupOwner,
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_conversation_member_rejects_non_member() {
+        let result = ensure_conversation_member(false);
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
+    }
+
+    #[test]
+    fn ensure_group_conversation_rejects_non_group_type() {
+        let result = ensure_group_conversation(
+            ConversationType::Direct,
+            messages::i18n::Key::GroupUpdateOnlyForGroup,
+        );
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
+    }
+
+    #[test]
+    fn ensure_group_owner_rejects_non_owner() {
+        let result = ensure_group_owner(
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            messages::i18n::Key::GroupOwnerOnlyAdd,
+        );
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
+    }
+
+    #[test]
+    fn ensure_member_removal_permission_rejects_unauthorized_requester() {
+        let creator_id = Uuid::now_v7();
+        let requester_id = Uuid::now_v7();
+        let target_id = Uuid::now_v7();
+
+        let result = ensure_member_removal_permission(requester_id, target_id, creator_id);
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
+    }
+
+    #[test]
+    fn ensure_member_removal_permission_rejects_removing_creator() {
+        let creator_id = Uuid::now_v7();
+
+        let result = ensure_member_removal_permission(creator_id, creator_id, creator_id);
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
     }
 }

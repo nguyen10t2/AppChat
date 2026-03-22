@@ -47,10 +47,26 @@ cargo clippy -- -D warnings
 cargo test --no-fail-fast
 ```
 
+Test runbook nhanh theo phạm vi thay đổi:
+
+```bash
+# Module-focused
+cargo test friend_test
+cargo test message_test
+cargo test call_test
+cargo test ws_server_test
+
+# Full sanity
+cargo test
+```
+
 Trạng thái test hiện tại:
 
 - Unit tests: pass
 - Integration tests conversation: `ignored` (cần DB fixture và schema đã migrate)
+- `group_management_test`: `ignored` (cần Postgres + seed fixture phù hợp)
+
+Ghi chú module-level sau refactor: xem `docs/backend-module-notes.md`.
 
 ## 5. API và realtime
 
@@ -94,6 +110,26 @@ Trạng thái test hiện tại:
 
 Lưu ý: metrics hiện lưu in-memory, sẽ reset khi restart process.
 
+Runbook vận hành observability: xem `../docs/observability-runbook.md`.
+Guideline hiệu năng: xem `../docs/performance-guidelines.md`.
+Baseline benchmark WebSocket map concurrency: `../docs/websocket-benchmark-baseline.md`.
+
+### Performance baseline smoke
+
+Chạy baseline smoke cho các flow cốt lõi (message/call/ws + full suite):
+
+```bash
+bash scripts/perf_smoke.sh
+```
+
+Tùy chọn số lần lặp mỗi case:
+
+```bash
+PERF_ITERATIONS=5 bash scripts/perf_smoke.sh
+```
+
+Kết quả mặc định được ghi vào `docs/perf-baseline-latest.md` để so sánh trước/sau refactor.
+
 ## 7. Chuẩn hóa error contract
 
 - Error response đã có `code` theo nhóm (`bad_request`, `forbidden`, `not_found`, ...)
@@ -107,6 +143,11 @@ Lưu ý: metrics hiện lưu in-memory, sẽ reset khi restart process.
 - `src/modules/`: user/friend/conversation/message/file_upload/websocket
 - `src/observability/`: metrics + request context
 - `src/tests/`: unit test và integration test
+
+Snapshot boundary sau refactor:
+- `message`/`conversation`/`call`: service policy helpers tách khỏi orchestration chính.
+- `websocket`: session/room/broadcast helpers tách theo lifecycle rõ ràng.
+- API handlers: chuẩn hóa flow parse/validate/map trước khi gọi service.
 
 ## 9. Chuẩn bị cho frontend
 

@@ -7,7 +7,6 @@ mod tests {
     use uuid::Uuid;
 
     use crate::api::error;
-    use crate::configs::RedisCache;
     use crate::modules::conversation::model::{
         ConversationDetail, ConversationRow, NewLastMessage, NewParticipant,
         ParticipantDetailWithConversation,
@@ -23,7 +22,7 @@ mod tests {
     use crate::modules::message::schema::{MessageEntity, MessageType};
     use crate::modules::message::service::{MessageRoute, MessageService};
     use crate::modules::websocket::server::WebSocketServer;
-    use crate::tests::mock::database::MockDatabase;
+    use crate::tests::mock::{lazy_mock_pool, test_redis_cache};
 
     #[derive(Clone)]
     struct MockConversationRepo {
@@ -34,11 +33,60 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ConversationRepository for MockConversationRepo {
-        async fn update_group_info<'e, E>(&self, _conversation_id: &Uuid, _name: Option<&str>, _avatar_url: Option<Option<&str>>, _tx: E) -> Result<(), error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(()) }
-        async fn get_group_creator<'e, E>(&self, _conversation_id: &Uuid, _tx: E) -> Result<Option<Uuid>, error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(None) }
-        async fn add_participant<'e, E>(&self, _conversation_id: &Uuid, _user_id: &Uuid, _tx: E) -> Result<(), error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(()) }
-        async fn remove_participant<'e, E>(&self, _conversation_id: &Uuid, _user_id: &Uuid, _tx: E) -> Result<(), error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(()) }
-        async fn get_group_member_ids<'e, E>(&self, _conversation_id: &Uuid, _tx: E) -> Result<Vec<Uuid>, error::SystemError> where E: sqlx::Executor<'e, Database = sqlx::Postgres> { Ok(vec![]) }
+        async fn update_group_info<'e, E>(
+            &self,
+            _conversation_id: &Uuid,
+            _name: Option<&str>,
+            _avatar_url: Option<Option<&str>>,
+            _tx: E,
+        ) -> Result<(), error::SystemError>
+        where
+            E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+        {
+            Ok(())
+        }
+        async fn get_group_creator<'e, E>(
+            &self,
+            _conversation_id: &Uuid,
+            _tx: E,
+        ) -> Result<Option<Uuid>, error::SystemError>
+        where
+            E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+        {
+            Ok(None)
+        }
+        async fn add_participant<'e, E>(
+            &self,
+            _conversation_id: &Uuid,
+            _user_id: &Uuid,
+            _tx: E,
+        ) -> Result<(), error::SystemError>
+        where
+            E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+        {
+            Ok(())
+        }
+        async fn remove_participant<'e, E>(
+            &self,
+            _conversation_id: &Uuid,
+            _user_id: &Uuid,
+            _tx: E,
+        ) -> Result<(), error::SystemError>
+        where
+            E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+        {
+            Ok(())
+        }
+        async fn get_group_member_ids<'e, E>(
+            &self,
+            _conversation_id: &Uuid,
+            _tx: E,
+        ) -> Result<Vec<Uuid>, error::SystemError>
+        where
+            E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+        {
+            Ok(vec![])
+        }
         fn get_pool(&self) -> &sqlx::Pool<sqlx::Postgres> {
             &self.pool
         }
@@ -74,7 +122,9 @@ mod tests {
         where
             E: sqlx::Executor<'e, Database = sqlx::Postgres>,
         {
-            Err(error::SystemError::internal_error("not used"))
+            Err(error::SystemError::internal_error_key(
+                crate::api::messages::i18n::Key::InternalServer,
+            ))
         }
 
         async fn create_direct_conversation<'e>(
@@ -83,7 +133,9 @@ mod tests {
             _user_b: &Uuid,
             _tx: &mut sqlx::Transaction<'e, sqlx::Postgres>,
         ) -> Result<ConversationEntity, error::SystemError> {
-            Err(error::SystemError::internal_error("not used"))
+            Err(error::SystemError::internal_error_key(
+                crate::api::messages::i18n::Key::InternalServer,
+            ))
         }
 
         async fn create_group_conversation<'e>(
@@ -93,7 +145,9 @@ mod tests {
             _user_id: &Uuid,
             _tx: &mut sqlx::Transaction<'e, sqlx::Postgres>,
         ) -> Result<ConversationEntity, error::SystemError> {
-            Err(error::SystemError::internal_error("not used"))
+            Err(error::SystemError::internal_error_key(
+                crate::api::messages::i18n::Key::InternalServer,
+            ))
         }
 
         async fn find_direct_between_users<'e, E>(
@@ -390,7 +444,7 @@ mod tests {
         Uuid,
         Uuid,
     ) {
-        let pool = MockDatabase::new().pool();
+        let pool = lazy_mock_pool();
         let direct_unread_calls = Arc::new(Mutex::new(0));
         let group_unread_calls = Arc::new(Mutex::new(0));
 
@@ -430,11 +484,7 @@ mod tests {
             Arc::new(MockMessageRepo { pool: pool.clone() }),
             Arc::new(participant_repo),
             Arc::new(MockLastMessageRepo),
-            Arc::new(
-                RedisCache::new()
-                    .await
-                    .expect("failed to initialize redis cache pool"),
-            ),
+            Arc::new(test_redis_cache().await),
             Arc::new(WebSocketServer::new()),
         );
 
@@ -456,19 +506,23 @@ mod tests {
             .send_message_to_conversation(Uuid::now_v7(), Uuid::now_v7(), "hello".to_string())
             .await;
 
-        assert!(matches!(result, Err(error::SystemError::Forbidden(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
     }
 
     #[test]
     fn test_resolve_message_route_group() {
         let sender_id = Uuid::now_v7();
 
-        let route = MessageService::<
-            MockMessageRepo,
-            MockConversationRepo,
-            MockParticipantRepo,
-            MockLastMessageRepo,
-        >::resolve_message_route(&ConversationType::Group, sender_id, [sender_id]);
+        let route =
+            MessageService::<
+                MockMessageRepo,
+                MockConversationRepo,
+                MockParticipantRepo,
+                MockLastMessageRepo,
+            >::resolve_message_route(&ConversationType::Group, sender_id, [sender_id]);
 
         assert!(matches!(route, Ok(MessageRoute::Group)));
     }
@@ -483,7 +537,11 @@ mod tests {
             MockConversationRepo,
             MockParticipantRepo,
             MockLastMessageRepo,
-        >::resolve_message_route(&ConversationType::Direct, sender_id, [sender_id, recipient_id]);
+        >::resolve_message_route(
+            &ConversationType::Direct,
+            sender_id,
+            [sender_id, recipient_id],
+        );
 
         assert!(matches!(
             route,
@@ -497,14 +555,18 @@ mod tests {
     fn test_resolve_message_route_direct_missing_recipient() {
         let sender_id = Uuid::now_v7();
 
-        let route = MessageService::<
-            MockMessageRepo,
-            MockConversationRepo,
-            MockParticipantRepo,
-            MockLastMessageRepo,
-        >::resolve_message_route(&ConversationType::Direct, sender_id, [sender_id]);
+        let route =
+            MessageService::<
+                MockMessageRepo,
+                MockConversationRepo,
+                MockParticipantRepo,
+                MockLastMessageRepo,
+            >::resolve_message_route(&ConversationType::Direct, sender_id, [sender_id]);
 
-        assert!(matches!(route, Err(error::SystemError::BadRequest(_))));
+        assert!(matches!(
+            route,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
     }
 
     #[test]
@@ -531,7 +593,10 @@ mod tests {
             MockLastMessageRepo,
         >::normalize_message_input(None, Some(MessageType::File), None);
 
-        assert!(matches!(result, Err(error::SystemError::BadRequest(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
     }
 
     #[test]
@@ -541,8 +606,67 @@ mod tests {
             MockConversationRepo,
             MockParticipantRepo,
             MockLastMessageRepo,
-        >::normalize_message_input(Some("   ".to_string()), None, Some(" ".to_string()));
+        >::normalize_message_input(
+            Some("   ".to_string()), None, Some(" ".to_string())
+        );
 
-        assert!(matches!(result, Err(error::SystemError::BadRequest(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_ensure_conversation_member_rejects_false() {
+        let result = MessageService::<
+            MockMessageRepo,
+            MockConversationRepo,
+            MockParticipantRepo,
+            MockLastMessageRepo,
+        >::ensure_conversation_member(false);
+
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_ensure_message_owner_allows_sender() {
+        let sender_id = Uuid::now_v7();
+
+        let result = MessageService::<
+            MockMessageRepo,
+            MockConversationRepo,
+            MockParticipantRepo,
+            MockLastMessageRepo,
+        >::ensure_message_owner(
+            sender_id,
+            sender_id,
+            crate::api::messages::i18n::Key::DeleteOwnMessageOnly,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_message_owner_rejects_other_user() {
+        let sender_id = Uuid::now_v7();
+
+        let result = MessageService::<
+            MockMessageRepo,
+            MockConversationRepo,
+            MockParticipantRepo,
+            MockLastMessageRepo,
+        >::ensure_message_owner(
+            sender_id,
+            Uuid::now_v7(),
+            crate::api::messages::i18n::Key::EditOwnMessageOnly,
+        );
+
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Forbidden(_) | error::SystemError::ForbiddenKey(_))
+        ));
     }
 }

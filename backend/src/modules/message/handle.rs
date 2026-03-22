@@ -2,7 +2,7 @@ use actix_web::{HttpRequest, delete, patch, post, web};
 use uuid::Uuid;
 
 use crate::{
-    api::{error, success},
+    api::{error, messages, success},
     middlewares::get_extensions,
     modules::{
         conversation::{
@@ -15,8 +15,7 @@ use crate::{
         friend::handle::FriendSvc,
         message::{
             model::{
-                EditMessageRequest, SendDirectMessage, SendDirectMessagePayload,
-                SendGroupMessage,
+                EditMessageRequest, SendDirectMessage, SendDirectMessagePayload, SendGroupMessage,
             },
             repository_pg::MessageRepositoryPg,
             schema::MessageEntity,
@@ -33,6 +32,62 @@ type MessageSvc = MessageService<
     LastMessagePgRepository,
 >;
 
+fn current_user_id(req: &HttpRequest) -> Result<Uuid, error::Error> {
+    Ok(get_extensions::<Claims>(req)?.sub)
+}
+
+fn require_recipient_id(body: &SendDirectMessage) -> Result<Uuid, error::Error> {
+    body.recipient_id.ok_or(error::Error::bad_request_key(
+        messages::i18n::Key::MissingRecipientId,
+    ))
+}
+
+async fn ensure_friendship(
+    friend_svc: &FriendSvc,
+    sender_id: Uuid,
+    recipient_id: Uuid,
+) -> Result<(), error::Error> {
+    if !friend_svc
+        .is_friend(sender_id, recipient_id)
+        .await
+        .unwrap_or(false)
+    {
+        return Err(error::Error::forbidden_key(
+            messages::i18n::Key::NotFriendWithRecipient,
+        ));
+    }
+
+    Ok(())
+}
+
+async fn ensure_conversation_membership(
+    conversation_svc: &ConversationSvc,
+    conversation_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), error::Error> {
+    let (_, is_member) = conversation_svc
+        .get_conversation_and_check_membership(conversation_id, user_id)
+        .await?;
+
+    if !is_member {
+        return Err(error::Error::forbidden_key(
+            messages::i18n::Key::NotConversationMember,
+        ));
+    }
+
+    Ok(())
+}
+
+fn build_direct_payload(body: &SendDirectMessage) -> SendDirectMessagePayload {
+    SendDirectMessagePayload {
+        conversation_id: body.conversation_id,
+        content: body.content.clone(),
+        message_type: body._type.clone(),
+        file_url: body.file_url.clone(),
+        reply_to_id: body.reply_to_id,
+    }
+}
+
 /// Gửi tin nhắn cá nhân
 #[post("/")]
 pub async fn send_direct_message(
@@ -41,33 +96,12 @@ pub async fn send_direct_message(
     body: web::Json<SendDirectMessage>,
     req: HttpRequest,
 ) -> Result<success::Success<MessageEntity>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
-    let recipient_id = body
-        .recipient_id
-        .ok_or(error::Error::bad_request("Cần có ID người nhận"))?;
-
-    if !friend_svc
-        .is_friend(user_id, recipient_id)
-        .await
-        .unwrap_or(false)
-    {
-        return Err(error::Error::forbidden(
-            "Bạn không phải bạn bè với người nhận",
-        ));
-    }
+    let user_id = current_user_id(&req)?;
+    let recipient_id = require_recipient_id(&body)?;
+    ensure_friendship(friend_svc.get_ref(), user_id, recipient_id).await?;
 
     let message = message_service
-        .send_direct_message_payload(
-            user_id,
-            recipient_id,
-            SendDirectMessagePayload {
-                conversation_id: body.conversation_id,
-                content: body.content.clone(),
-                message_type: body._type.clone(),
-                file_url: body.file_url.clone(),
-                reply_to_id: body.reply_to_id,
-            },
-        )
+        .send_direct_message_payload(user_id, recipient_id, build_direct_payload(&body))
         .await?;
 
     Ok(success::Success::ok(Some(message)).message("Gửi tin nhắn cá nhân thành công"))
@@ -81,17 +115,10 @@ pub async fn send_group_message(
     body: web::Json<SendGroupMessage>,
     req: HttpRequest,
 ) -> Result<success::Success<MessageEntity>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
 
-    let (_, is_member) = conversation_svc
-        .get_conversation_and_check_membership(body.conversation_id, user_id)
+    ensure_conversation_membership(conversation_svc.get_ref(), body.conversation_id, user_id)
         .await?;
-
-    if !is_member {
-        return Err(error::Error::forbidden(
-            "Bạn không phải thành viên của cuộc trò chuyện này",
-        ));
-    }
 
     let message = message_service
         .send_group_message_payload(
@@ -114,7 +141,7 @@ pub async fn delete_message(
     message_id: web::Path<Uuid>,
     req: HttpRequest,
 ) -> Result<success::Success<()>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
     message_service.delete_message(*message_id, user_id).await?;
     Ok(success::Success::no_content())
 }
@@ -127,7 +154,7 @@ pub async fn edit_message(
     ValidatedJson(body): ValidatedJson<EditMessageRequest>,
     req: HttpRequest,
 ) -> Result<success::Success<MessageEntity>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
 
     let message = message_service
         .edit_message(*message_id, user_id, body.content)

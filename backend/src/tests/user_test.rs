@@ -72,20 +72,30 @@ mod tests {
             &self,
             username: &str,
         ) -> Result<Option<UserEntity>, error::SystemError> {
-            let users = self
-                .users_by_username
-                .lock()
-                .expect("repo mutex poisoned");
+            let users = self.users_by_username.lock().expect("repo mutex poisoned");
             Ok(users.get(username).cloned())
         }
 
-        async fn create(&self, _user: &crate::modules::user::model::InsertUser) -> Result<Uuid, error::SystemError> {
+        async fn create(
+            &self,
+            _user: &crate::modules::user::model::InsertUser,
+        ) -> Result<Uuid, error::SystemError> {
             Ok(Uuid::now_v7())
         }
 
-        async fn update(&self, _id: &Uuid, _user: &UpdateUser) -> Result<UserEntity, error::SystemError> {
-            let updated = self.update_result.lock().expect("repo mutex poisoned").clone();
-            updated.ok_or_else(|| error::SystemError::not_found("Không tìm thấy người dùng"))
+        async fn update(
+            &self,
+            _id: &Uuid,
+            _user: &UpdateUser,
+        ) -> Result<UserEntity, error::SystemError> {
+            let updated = self
+                .update_result
+                .lock()
+                .expect("repo mutex poisoned")
+                .clone();
+            updated.ok_or_else(|| {
+                error::SystemError::not_found_key(crate::api::messages::i18n::Key::UserNotFound)
+            })
         }
 
         async fn delete(&self, _id: &Uuid) -> Result<bool, error::SystemError> {
@@ -97,13 +107,14 @@ mod tests {
             _query: &str,
             limit: i32,
         ) -> Result<Vec<UserEntity>, error::SystemError> {
-            let mut last_limit = self
-                .last_search_limit
-                .lock()
-                .expect("repo mutex poisoned");
+            let mut last_limit = self.last_search_limit.lock().expect("repo mutex poisoned");
             *last_limit = Some(limit);
 
-            Ok(self.search_result.lock().expect("repo mutex poisoned").clone())
+            Ok(self
+                .search_result
+                .lock()
+                .expect("repo mutex poisoned")
+                .clone())
         }
     }
 
@@ -124,7 +135,10 @@ mod tests {
         }
     }
 
-    async fn build_service(repo: MockUserRepo, cache: InMemoryCache) -> UserService<MockUserRepo, InMemoryCache> {
+    async fn build_service(
+        repo: MockUserRepo,
+        cache: InMemoryCache,
+    ) -> UserService<MockUserRepo, InMemoryCache> {
         UserService::with_dependencies(Arc::new(repo), Arc::new(cache))
     }
 
@@ -139,7 +153,10 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result, Err(error::SystemError::Unauthorized(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Unauthorized(_) | error::SystemError::UnauthorizedKey(_))
+        ));
     }
 
     #[tokio::test]
@@ -168,7 +185,10 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result, Err(error::SystemError::Unauthorized(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::Unauthorized(_) | error::SystemError::UnauthorizedKey(_))
+        ));
     }
 
     #[tokio::test]
@@ -235,10 +255,16 @@ mod tests {
         let service = build_service(repo, InMemoryCache::default()).await;
 
         let empty_query = service.search_users("   ", 10).await;
-        assert!(matches!(empty_query, Err(error::SystemError::BadRequest(_))));
+        assert!(matches!(
+            empty_query,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
 
         let short_query = service.search_users("a", 10).await;
-        assert!(matches!(short_query, Err(error::SystemError::BadRequest(_))));
+        assert!(matches!(
+            short_query,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
 
         let users = service
             .search_users("car", 999)
@@ -274,7 +300,10 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(result, Err(error::SystemError::BadRequest(_))));
+        assert!(matches!(
+            result,
+            Err(error::SystemError::BadRequest(_) | error::SystemError::BadRequestKey(_))
+        ));
     }
 
     #[tokio::test]

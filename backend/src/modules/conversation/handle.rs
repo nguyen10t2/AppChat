@@ -2,7 +2,7 @@ use actix_web::{HttpRequest, delete, get, patch, post, web};
 use uuid::Uuid;
 
 use crate::{
-    api::{error, success},
+    api::{error, messages, success},
     middlewares::get_extensions,
     modules::{
         conversation::{
@@ -22,13 +22,60 @@ use crate::{
 pub type ConversationSvc =
     ConversationService<ConversationPgRepository, ParticipantPgRepository, MessageRepositoryPg>;
 
+fn current_user_id(req: &HttpRequest) -> Result<Uuid, error::Error> {
+    Ok(get_extensions::<Claims>(req)?.sub)
+}
+
+fn path_uuid(path: web::Path<Uuid>) -> Uuid {
+    *path
+}
+
+async fn ensure_conversation_member(
+    conversation_svc: &ConversationSvc,
+    conversation_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), error::Error> {
+    let (_, is_member) = conversation_svc
+        .get_conversation_and_check_membership(conversation_id, user_id)
+        .await?;
+
+    if !is_member {
+        return Err(error::Error::forbidden_key(
+            messages::i18n::Key::NotConversationMember,
+        ));
+    }
+
+    Ok(())
+}
+
+async fn ensure_can_create_conversation_membership(
+    friend_svc: &FriendSvc,
+    creator_id: Uuid,
+    member_ids: &[Uuid],
+) -> Result<(), error::Error> {
+    for &member_id in member_ids {
+        if member_id != creator_id
+            && !friend_svc
+                .is_friend(creator_id, member_id)
+                .await
+                .unwrap_or(false)
+        {
+            return Err(error::Error::forbidden_key(
+                messages::i18n::Key::NotFriendsWithAllMembers,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Lấy danh sách toàn bộ các cuộc trò chuyện của User
 #[get("")]
 pub async fn get_conversations(
     conversation_svc: web::Data<ConversationSvc>,
     req: HttpRequest,
 ) -> Result<success::Success<Vec<ConversationDetail>>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
 
     let conversations = conversation_svc.get_by_user_id(user_id).await?;
 
@@ -44,19 +91,13 @@ pub async fn get_messages(
     req: HttpRequest,
     ValidatedQuery(query): ValidatedQuery<MessageQueryRequest>,
 ) -> Result<success::Success<GetMessageResponse>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
-    let (_, is_member) = conversation_svc
-        .get_conversation_and_check_membership(*conversation_id, user_id)
-        .await?;
+    let user_id = current_user_id(&req)?;
+    let conversation_id = path_uuid(conversation_id);
 
-    if !is_member {
-        return Err(error::Error::forbidden(
-            "Bạn không phải thành viên của cuộc trò chuyện này",
-        ));
-    }
+    ensure_conversation_member(conversation_svc.get_ref(), conversation_id, user_id).await?;
 
     let (messages, cursor) = conversation_svc
-        .get_message(*conversation_id, query.limit, query.cursor.clone())
+        .get_message(conversation_id, query.limit, query.cursor.clone())
         .await?;
     Ok(
         success::Success::ok(Some(GetMessageResponse { messages, cursor }))
@@ -72,20 +113,10 @@ pub async fn create_conversation(
     ValidatedJson(body): ValidatedJson<NewConversation>,
     req: HttpRequest,
 ) -> Result<success::Success<Option<ConversationDetail>>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
 
-    for &member_id in &body.member_ids {
-        if member_id != user_id
-            && !friend_svc
-                .is_friend(user_id, member_id)
-                .await
-                .unwrap_or(false)
-            {
-                return Err(error::Error::forbidden(
-                    "Bạn không phải bạn bè với tất cả các thành viên",
-                ));
-            }
-    }
+    ensure_can_create_conversation_membership(friend_svc.get_ref(), user_id, &body.member_ids)
+        .await?;
 
     let conversation = conversation_svc
         .create_conversation(body._type, body.name, body.member_ids, user_id)
@@ -101,11 +132,10 @@ pub async fn mark_as_seen(
     conversation_id: web::Path<Uuid>,
     req: HttpRequest,
 ) -> Result<success::Success<String>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
+    let conversation_id = path_uuid(conversation_id);
 
-    conversation_svc
-        .mark_as_seen(*conversation_id, user_id)
-        .await?;
+    conversation_svc.mark_as_seen(conversation_id, user_id).await?;
 
     Ok(success::Success::ok(Some("Đã đánh dấu đã xem".to_string()))
         .message("Đánh dấu tin nhắn đã xem thành công"))
@@ -119,10 +149,11 @@ pub async fn update_group(
     ValidatedJson(body): ValidatedJson<UpdateGroupRequest>,
     req: HttpRequest,
 ) -> Result<success::Success<()>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
+    let conversation_id = path_uuid(conversation_id);
 
     conversation_svc
-        .update_group_info(*conversation_id, user_id, body.name, body.avatar_url)
+        .update_group_info(conversation_id, user_id, body.name, body.avatar_url)
         .await?;
 
     Ok(success::Success::ok(None).message("Cập nhật thông tin nhóm thành công"))
@@ -137,7 +168,8 @@ pub async fn add_member(
     ValidatedJson(body): ValidatedJson<AddMemberRequest>,
     req: HttpRequest,
 ) -> Result<success::Success<()>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
+    let conversation_id = path_uuid(conversation_id);
 
     let is_friend = friend_svc
         .is_friend(user_id, body.user_id)
@@ -145,7 +177,7 @@ pub async fn add_member(
         .unwrap_or(false);
 
     conversation_svc
-        .add_member(*conversation_id, user_id, body.user_id, is_friend)
+        .add_member(conversation_id, user_id, body.user_id, is_friend)
         .await?;
 
     Ok(success::Success::ok(None).message("Thêm thành viên vào nhóm thành công"))
@@ -158,7 +190,7 @@ pub async fn remove_member(
     path: web::Path<(Uuid, Uuid)>,
     req: HttpRequest,
 ) -> Result<success::Success<()>, error::Error> {
-    let user_id = get_extensions::<Claims>(&req)?.sub;
+    let user_id = current_user_id(&req)?;
     let (conversation_id, target_user_id) = path.into_inner();
 
     conversation_svc

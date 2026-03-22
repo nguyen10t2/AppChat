@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::ENV;
+use crate::configs::AppConfig;
 use crate::modules::conversation::repository_pg::{
     ConversationPgRepository, LastMessagePgRepository, ParticipantPgRepository,
 };
@@ -37,6 +37,7 @@ pub struct WebSocketSessionImpl {
     pub presence_service: Option<Arc<PresenceService>>,
     pub friend_repo: Option<Arc<FriendRepositoryPg>>,
     pub friend_ids: Vec<Uuid>,
+    pub config: Arc<AppConfig>,
 }
 
 impl WebSocketSessionImpl {
@@ -47,6 +48,7 @@ impl WebSocketSessionImpl {
         message_service: Option<Arc<MessageSvc>>,
         presence_service: Option<Arc<PresenceService>>,
         friend_repo: Option<Arc<FriendRepositoryPg>>,
+        config: Arc<AppConfig>,
     ) -> Self {
         Self {
             id: Uuid::now_v7(),
@@ -58,6 +60,7 @@ impl WebSocketSessionImpl {
             presence_service,
             friend_repo,
             friend_ids: Vec::new(),
+            config,
         }
     }
 
@@ -131,7 +134,7 @@ impl WebSocketSessionImpl {
             return;
         }
 
-        let claims = match Claims::decode(token, ENV.jwt_secret.as_ref()) {
+        let claims = match Claims::decode(token, self.config.jwt_secret.as_ref()) {
             Ok(claims) => claims,
             Err(e) => {
                 tracing::warn!(

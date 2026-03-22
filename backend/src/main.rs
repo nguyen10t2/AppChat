@@ -6,16 +6,17 @@ use actix_web::{
     middleware::{Logger, from_fn},
     web,
 };
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use crate::{
-    configs::{RedisCache, connect_database},
+    app_state::AppState,
+    configs::{AppConfig, RedisCache, connect_database_with_config},
     middlewares::{authentication, authorization},
     modules::{
         call::{
-            repository_pg::{CallPgRepository, CallParticipantPgRepository},
-            service::CallService,
             handler::CallHandler,
+            repository_pg::{CallParticipantPgRepository, CallPgRepository},
+            service::CallService,
         },
         conversation::{
             repository_pg::{
@@ -34,8 +35,8 @@ use crate::{
 };
 
 mod api;
+mod app_state;
 mod configs;
-mod constants;
 mod middlewares;
 pub mod modules;
 mod observability;
@@ -44,10 +45,27 @@ mod utils;
 #[cfg(test)]
 mod tests;
 
-pub static ENV: LazyLock<constants::Env> = LazyLock::new(|| {
+#[actix_web::get("/")]
+async fn health_check(_db_pool: web::Data<sqlx::PgPool>) -> &'static str {
+    "Server is running"
+}
+
+#[actix_web::get("/metrics")]
+async fn metrics(app_state: web::Data<AppState>) -> actix_web::HttpResponse {
+    actix_web::HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4; charset=utf-8")
+        .body(app_state.metrics.prometheus_text())
+}
+
+#[actix_web::get("/metrics/json")]
+async fn metrics_json(app_state: web::Data<AppState>) -> actix_web::HttpResponse {
+    actix_web::HttpResponse::Ok().json(app_state.metrics.snapshot())
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
 
-    // Setup tracing subscriber cho logging
     tracing_subscriber::fmt()
         .with_target(false)
         .with_thread_ids(true)
@@ -56,41 +74,27 @@ pub static ENV: LazyLock<constants::Env> = LazyLock::new(|| {
     tracing::info!("Tracing initialized");
     tracing::info!("Environment variables loaded from .env file");
 
-    constants::Env::default()
-});
-
-pub static METRICS: LazyLock<observability::AppMetrics> =
-    LazyLock::new(observability::AppMetrics::default);
-
-#[actix_web::get("/")]
-async fn health_check(_db_pool: web::Data<sqlx::PgPool>) -> &'static str {
-    "Server is running"
-}
-
-#[actix_web::get("/metrics")]
-async fn metrics() -> actix_web::HttpResponse {
-    actix_web::HttpResponse::Ok()
-        .content_type("text/plain; version=0.0.4; charset=utf-8")
-        .body(METRICS.prometheus_text())
-}
-
-#[actix_web::get("/metrics/json")]
-async fn metrics_json() -> actix_web::HttpResponse {
-    actix_web::HttpResponse::Ok().json(METRICS.snapshot())
-}
-
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    let db_pool = connect_database().await.map_err(|_| {
-        eprintln!("Database connection error");
-        std::io::Error::other("Database connection error")
+    let app_config = AppConfig::from_env().map_err(|e| {
+        eprintln!("Config error: {e}");
+        std::io::Error::other("Configuration error")
     })?;
+
+    let app_state = AppState::new(app_config.clone(), observability::AppMetrics::default());
+
+    let db_pool = connect_database_with_config(&app_config)
+        .await
+        .map_err(|_| {
+            eprintln!("Database connection error");
+            std::io::Error::other("Database connection error")
+        })?;
     println!("Database connection successful");
 
-    let redis_pool = RedisCache::new().await.map_err(|_| {
-        eprintln!("Redis connection error");
-        std::io::Error::other("Redis connection error")
-    })?;
+    let redis_pool = RedisCache::new_with_config(&app_config)
+        .await
+        .map_err(|_| {
+            eprintln!("Redis connection error");
+            std::io::Error::other("Redis connection error")
+        })?;
     println!("Redis connection successful");
 
     let user_repo = UserRepositoryPg::new(db_pool.clone());
@@ -102,49 +106,66 @@ async fn main() -> std::io::Result<()> {
         ConversationPgRepository::new(db_pool.clone(), participant_repo.clone());
     let last_message_repo = LastMessagePgRepository::default();
     let file_repo = FilePgRepository::new(db_pool.clone());
-    let ws_server = Arc::new(WebSocketServer::new());
-    let user_service =
-        UserService::with_dependencies(Arc::new(user_repo.clone()), Arc::new(redis_pool.clone()));
+    let ws_server = Arc::new(WebSocketServer::with_metrics(app_state.metrics.clone()));
+    let user_service = UserService::with_dependencies_and_config(
+        Arc::new(user_repo.clone()),
+        Arc::new(redis_pool.clone()),
+        app_state.config.clone(),
+    );
     let friend_service = FriendService::with_dependencies(
         Arc::new(friend_repo.clone()),
         Arc::new(user_repo.clone()),
     );
-    let file_upload_service = FileUploadService::with_defaults(Arc::new(file_repo));
-    let conversation_service = ConversationService::with_dependencies(
+    let file_upload_service = FileUploadService::with_defaults_and_settings(
+        Arc::new(file_repo),
+        app_state.metrics.clone(),
+        app_state.config.clone(),
+    );
+    let conversation_service = ConversationService::with_dependencies_and_metrics(
         Arc::new(conversation_repo.clone()),
         Arc::new(participant_repo.clone()),
         Arc::new(message_repo.clone()),
         ws_server.clone(),
+        app_state.metrics.clone(),
     );
-    let message_service = MessageService::with_dependencies(
+    let message_service = MessageService::with_dependencies_and_metrics(
         Arc::new(conversation_repo.clone()),
         Arc::new(message_repo),
         Arc::new(participant_repo),
         Arc::new(last_message_repo),
         Arc::new(redis_pool),
         ws_server.clone(),
+        app_state.metrics.clone(),
     );
-    
+
     // Call module
     let call_repo = Arc::new(CallPgRepository::new(db_pool.clone()));
     let call_participant_repo = Arc::new(CallParticipantPgRepository::new(db_pool.clone()));
-    let call_service = Arc::new(CallService::with_dependencies(
+    let call_service = Arc::new(CallService::with_dependencies_and_metrics(
         call_repo.clone(),
         call_participant_repo.clone(),
         ws_server.clone(),
+        app_state.metrics.clone(),
     ));
-    let call_handler = Arc::new(CallHandler::new(call_service.clone(), Arc::new(user_repo.clone())));
+    let call_handler = Arc::new(CallHandler::new(
+        call_service.clone(),
+        Arc::new(user_repo.clone()),
+    ));
 
     tracing::info!(
         "Starting HTTP server at http://{}:{}",
-        ENV.ip.as_str(),
-        ENV.port
+        app_state.config.ip.as_str(),
+        app_state.config.port
     );
+
+    let bind_ip = app_state.config.ip.clone();
+    let bind_port = app_state.config.port;
+    let app_state_data = app_state.clone();
 
     HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin("http://localhost:5173")
-            .allowed_origin(&ENV.frontend_url)
+            .allowed_origin(&app_state_data.config.frontend_url)
             .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
             .allowed_headers(vec![
                 header::AUTHORIZATION,
@@ -158,6 +179,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .wrap(Logger::default())
             .wrap(from_fn(middlewares::request_context))
+            .app_data(web::Data::new(app_state_data.clone()))
             .app_data(web::Data::new(user_service.clone()))
             .app_data(web::Data::new(friend_service.clone()))
             .app_data(web::Data::new(file_upload_service.clone()))
@@ -191,11 +213,11 @@ async fn main() -> std::io::Result<()> {
                             .configure(modules::conversation::route::configure)
                             .configure(modules::message::route::configure)
                             .configure(modules::file_upload::route::configure::<FilePgRepository>)
-                                .configure(modules::call::route::configure),
+                            .configure(modules::call::route::configure),
                     ),
             )
     })
-    .bind((ENV.ip.as_str(), ENV.port))?
+    .bind((bind_ip.as_str(), bind_port))?
     .run()
     .await
 }

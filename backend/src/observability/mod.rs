@@ -32,6 +32,16 @@ pub struct AppMetrics {
     message_send_latency_le_100_ms: AtomicU64,
     message_send_latency_le_250_ms: AtomicU64,
     message_send_latency_inf_ms: AtomicU64,
+    call_initiate_total: AtomicU64,
+    call_accept_total: AtomicU64,
+    call_reject_total: AtomicU64,
+    call_cancel_total: AtomicU64,
+    call_end_total: AtomicU64,
+    conversation_create_total: AtomicU64,
+    conversation_mark_seen_total: AtomicU64,
+    conversation_group_update_total: AtomicU64,
+    conversation_member_add_total: AtomicU64,
+    conversation_member_remove_total: AtomicU64,
     upload_attempt_total: AtomicU64,
     upload_failure_total: AtomicU64,
 }
@@ -56,6 +66,16 @@ impl Default for AppMetrics {
             message_send_latency_le_100_ms: AtomicU64::new(0),
             message_send_latency_le_250_ms: AtomicU64::new(0),
             message_send_latency_inf_ms: AtomicU64::new(0),
+            call_initiate_total: AtomicU64::new(0),
+            call_accept_total: AtomicU64::new(0),
+            call_reject_total: AtomicU64::new(0),
+            call_cancel_total: AtomicU64::new(0),
+            call_end_total: AtomicU64::new(0),
+            conversation_create_total: AtomicU64::new(0),
+            conversation_mark_seen_total: AtomicU64::new(0),
+            conversation_group_update_total: AtomicU64::new(0),
+            conversation_member_add_total: AtomicU64::new(0),
+            conversation_member_remove_total: AtomicU64::new(0),
             upload_attempt_total: AtomicU64::new(0),
             upload_failure_total: AtomicU64::new(0),
         }
@@ -86,6 +106,16 @@ pub struct MetricsSnapshot {
     pub message_send_p50_ms: f64,
     pub message_send_p95_ms: f64,
     pub message_send_p99_ms: f64,
+    pub call_initiate_total: u64,
+    pub call_accept_total: u64,
+    pub call_reject_total: u64,
+    pub call_cancel_total: u64,
+    pub call_end_total: u64,
+    pub conversation_create_total: u64,
+    pub conversation_mark_seen_total: u64,
+    pub conversation_group_update_total: u64,
+    pub conversation_member_add_total: u64,
+    pub conversation_member_remove_total: u64,
     pub upload_attempt_total: u64,
     pub upload_failure_total: u64,
     pub upload_failure_rate: f64,
@@ -121,7 +151,8 @@ impl AppMetrics {
                     .fetch_add(1, Ordering::Relaxed);
             }
             WsCloseReason::StreamEnded => {
-                self.ws_close_stream_end_total.fetch_add(1, Ordering::Relaxed);
+                self.ws_close_stream_end_total
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -167,6 +198,51 @@ impl AppMetrics {
         self.upload_attempt_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_call_initiate(&self) {
+        self.call_initiate_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_call_accept(&self) {
+        self.call_accept_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_call_reject(&self) {
+        self.call_reject_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_call_cancel(&self) {
+        self.call_cancel_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_call_end(&self) {
+        self.call_end_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_conversation_create(&self) {
+        self.conversation_create_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_conversation_mark_seen(&self) {
+        self.conversation_mark_seen_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_conversation_group_update(&self) {
+        self.conversation_group_update_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_conversation_member_add(&self) {
+        self.conversation_member_add_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_conversation_member_remove(&self) {
+        self.conversation_member_remove_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn inc_upload_failure(&self) {
         self.upload_failure_total.fetch_add(1, Ordering::Relaxed);
     }
@@ -200,7 +276,9 @@ impl AppMetrics {
             ws_disconnect_total: self.ws_disconnect_total.load(Ordering::Relaxed),
             ws_close_client_total: self.ws_close_client_total.load(Ordering::Relaxed),
             ws_close_timeout_total: self.ws_close_timeout_total.load(Ordering::Relaxed),
-            ws_close_protocol_error_total: self.ws_close_protocol_error_total.load(Ordering::Relaxed),
+            ws_close_protocol_error_total: self
+                .ws_close_protocol_error_total
+                .load(Ordering::Relaxed),
             ws_close_ping_failure_total: self.ws_close_ping_failure_total.load(Ordering::Relaxed),
             ws_close_stream_end_total: self.ws_close_stream_end_total.load(Ordering::Relaxed),
             message_send_total,
@@ -208,6 +286,24 @@ impl AppMetrics {
             message_send_p50_ms,
             message_send_p95_ms,
             message_send_p99_ms,
+            call_initiate_total: self.call_initiate_total.load(Ordering::Relaxed),
+            call_accept_total: self.call_accept_total.load(Ordering::Relaxed),
+            call_reject_total: self.call_reject_total.load(Ordering::Relaxed),
+            call_cancel_total: self.call_cancel_total.load(Ordering::Relaxed),
+            call_end_total: self.call_end_total.load(Ordering::Relaxed),
+            conversation_create_total: self.conversation_create_total.load(Ordering::Relaxed),
+            conversation_mark_seen_total: self
+                .conversation_mark_seen_total
+                .load(Ordering::Relaxed),
+            conversation_group_update_total: self
+                .conversation_group_update_total
+                .load(Ordering::Relaxed),
+            conversation_member_add_total: self
+                .conversation_member_add_total
+                .load(Ordering::Relaxed),
+            conversation_member_remove_total: self
+                .conversation_member_remove_total
+                .load(Ordering::Relaxed),
             upload_attempt_total,
             upload_failure_total,
             upload_failure_rate,
@@ -273,6 +369,36 @@ app_ws_close_total{{reason=\"stream_end\"}} {}\n\
 # HELP app_message_send_total Total sent messages\n\
 # TYPE app_message_send_total counter\n\
 app_message_send_total {}\n\
+# HELP app_call_initiate_total Total initiated calls\n\
+# TYPE app_call_initiate_total counter\n\
+app_call_initiate_total {}\n\
+# HELP app_call_accept_total Total accepted calls\n\
+# TYPE app_call_accept_total counter\n\
+app_call_accept_total {}\n\
+# HELP app_call_reject_total Total rejected calls\n\
+# TYPE app_call_reject_total counter\n\
+app_call_reject_total {}\n\
+# HELP app_call_cancel_total Total canceled calls\n\
+# TYPE app_call_cancel_total counter\n\
+app_call_cancel_total {}\n\
+# HELP app_call_end_total Total ended calls\n\
+# TYPE app_call_end_total counter\n\
+app_call_end_total {}\n\
+# HELP app_conversation_create_total Total created conversations\n\
+# TYPE app_conversation_create_total counter\n\
+app_conversation_create_total {}\n\
+# HELP app_conversation_mark_seen_total Total mark-as-seen operations\n\
+# TYPE app_conversation_mark_seen_total counter\n\
+app_conversation_mark_seen_total {}\n\
+# HELP app_conversation_group_update_total Total group info updates\n\
+# TYPE app_conversation_group_update_total counter\n\
+app_conversation_group_update_total {}\n\
+# HELP app_conversation_member_add_total Total member add operations\n\
+# TYPE app_conversation_member_add_total counter\n\
+app_conversation_member_add_total {}\n\
+# HELP app_conversation_member_remove_total Total member remove operations\n\
+# TYPE app_conversation_member_remove_total counter\n\
+app_conversation_member_remove_total {}\n\
 # HELP app_message_send_latency_ms Message send latency histogram in milliseconds\n\
 # TYPE app_message_send_latency_ms histogram\n\
 app_message_send_latency_ms_bucket{{le=\"10\"}} {}\n\
@@ -298,6 +424,16 @@ app_upload_failure_total {}\n",
             snapshot.ws_close_ping_failure_total,
             snapshot.ws_close_stream_end_total,
             snapshot.message_send_total,
+            snapshot.call_initiate_total,
+            snapshot.call_accept_total,
+            snapshot.call_reject_total,
+            snapshot.call_cancel_total,
+            snapshot.call_end_total,
+            snapshot.conversation_create_total,
+            snapshot.conversation_mark_seen_total,
+            snapshot.conversation_group_update_total,
+            snapshot.conversation_member_add_total,
+            snapshot.conversation_member_remove_total,
             b10,
             b25,
             b50,

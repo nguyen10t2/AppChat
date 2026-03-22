@@ -52,13 +52,13 @@ pub mod file_upload {
 }
 
 pub mod call {
-    pub mod schema;
+    pub mod handler;
     pub mod model;
     pub mod repository;
     pub mod repository_pg;
-    pub mod service;
-    pub mod handler;
     pub mod route;
+    pub mod schema;
+    pub mod service;
 }
 
 pub mod websocket;
