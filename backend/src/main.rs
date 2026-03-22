@@ -135,6 +135,7 @@ async fn main() -> std::io::Result<()> {
                     Some("http://localhost:5173") | Some("http://127.0.0.1:5173")
                 )
             })
+	    .allowed_origin("http://f5.soict.io:3000")
             .allowed_methods(vec!["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
             .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
             .supports_credentials()
@@ -180,7 +181,6 @@ async fn main() -> std::io::Result<()> {
             )
     })
     .bind((ENV.ip.as_str(), ENV.port))?
-    .workers(2)
     .run()
     .await
 }
